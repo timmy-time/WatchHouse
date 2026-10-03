@@ -99,11 +99,23 @@ def detect_behaviors(
     """Evaluate and accumulate behaviors for a track state."""
     new_behaviors: Set[str] = set()
 
-    # Approaching (any class)
-    for zone_name, secs in state.zone_seconds.items():
-        if secs >= 1.0:
-            new_behaviors.add("approaching")
-            break
+    # Approaching (persons, animals, or vehicles heading into property)
+    if state.class_name == "person" or state.class_name in ANIMAL_CLASSES:
+        for zone_name, secs in state.zone_seconds.items():
+            if secs >= 1.0:
+                new_behaviors.add("approaching")
+                break
+    elif state.class_name in VEHICLE_CLASSES and len(state.window) >= 3:
+        pts = [
+            ((det.bbox_xyxy[0] + det.bbox_xyxy[2]) / 2.0, (det.bbox_xyxy[1] + det.bbox_xyxy[3]) / 2.0)
+            for _, det in list(state.window)[-5:]
+        ]
+        dx = abs(pts[-1][0] - pts[0][0])
+        dy = pts[-1][1] - pts[0][1]
+        for zone_name, secs in state.zone_seconds.items():
+            if secs >= 1.0 and (dy > 15.0 and dy > 0.4 * dx):
+                new_behaviors.add("approaching")
+                break
 
     # Person-specific behaviors
     if state.class_name == "person" and state.window:

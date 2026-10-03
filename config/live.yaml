@@ -31,7 +31,7 @@ cameras:
     url: "${CAM_CAMB_URL}"
     gpu: 1
     zones:
-      - {name: lawn, type: entry, polygon: [[0.0, 0.34], [0.80, 0.34], [0.80, 1.0], [0.0, 1.0]]}
+      - {name: lawn, type: entry, polygon: [[0.0, 0.46], [0.80, 0.46], [0.80, 1.0], [0.0, 1.0]]}
   - name: Camera C
     url: "${CAM_CAMC_URL}"
     gpu: 0

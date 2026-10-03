@@ -251,18 +251,46 @@ class SceneryManager:
                 and slot.box[1] <= det_cy <= slot.box[3]
             )
 
-            if iou >= min_iou or inside:
+            # Must have real spatial alignment with slot
+            if iou >= min_iou or (inside and iou >= 0.25):
                 score = iou
                 if frame is not None and det_box_px is not None and slot.sig.hsv_bins:
                     current_sig = extract_vehicle_signature(frame, det_box_px)
                     sig_sim = compare_signatures(current_sig, slot.sig)
+                    # If slot has a known signature and vehicle has different appearance, reject!
+                    if sig_sim < 0.40:
+                        continue
                     score = (0.5 * iou) + (0.5 * sig_sim)
 
                 if score > best_score:
                     best_score = score
                     best_slot = slot
 
-        if best_slot is not None and best_score >= 0.35:
+        if best_slot is not None and best_score >= 0.40:
             return best_slot, best_score
 
         return None
+
+    def is_slot_occupied(
+        self,
+        slot: VehicleSlot,
+        dets: list,
+        frame_w: int,
+        frame_h: int,
+    ) -> bool:
+        """Check if any currently detected vehicle is still sitting in this slot."""
+        for d in dets:
+            if getattr(d, "class_name", "") in ("car", "truck", "bus"):
+                d_norm = (
+                    d.bbox_xyxy[0] / frame_w,
+                    d.bbox_xyxy[1] / frame_h,
+                    d.bbox_xyxy[2] / frame_w,
+                    d.bbox_xyxy[3] / frame_h,
+                )
+                iou = compute_box_iou(d_norm, slot.box)
+                cx = (d_norm[0] + d_norm[2]) / 2.0
+                cy = (d_norm[1] + d_norm[3]) / 2.0
+                inside = (slot.box[0] <= cx <= slot.box[2] and slot.box[1] <= cy <= slot.box[3])
+                if iou >= 0.25 or inside:
+                    return True
+        return False

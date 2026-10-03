@@ -194,9 +194,20 @@ class EventManager:
 
             # Scenery slot anchor check for vehicles
             if self.scenery is not None and d.class_name in VEHICLE_CLASSES:
+                # Only anchor stationary vehicles (not moving traffic)
+                track_is_moving = False
+                if len(state.window) >= 3:
+                    pts = [
+                        ((det.bbox_xyxy[0] + det.bbox_xyxy[2]) / 2.0, (det.bbox_xyxy[1] + det.bbox_xyxy[3]) / 2.0)
+                        for _, det in list(state.window)[-5:]
+                    ]
+                    disp = math.hypot(pts[-1][0] - pts[0][0], pts[-1][1] - pts[0][1])
+                    if disp > 30.0:
+                        track_is_moving = True
+
                 det_norm = (x1 / frame_w, y1 / frame_h, x2 / frame_w, y2 / frame_h)
                 matched = self.scenery.match_slot(self.cam.name, det_norm, frame=frame, det_box_px=d.bbox_xyxy)
-                if matched is not None:
+                if matched is not None and not track_is_moving:
                     slot, score = matched
                     state.anchored_slot_name = slot.name
                     slot_cx = ((slot.box[0] + slot.box[2]) / 2.0) * frame_w
@@ -210,7 +221,36 @@ class EventManager:
                         state.first_center = (slot_cx, slot_cy)
                         state.is_anchored = True
                     elif state.is_anchored:
-                        # Vehicle was anchored and has now driven out of slot
+                        # Only depart if slot is genuinely vacant (not temporary occlusion)
+                        slot_occupied = self.scenery.is_slot_occupied(slot, relevant_dets, frame_w, frame_h)
+                        if not slot_occupied:
+                            state.is_anchored = False
+                            departed = "vehicle_departed"
+                            state.behaviors.add(departed)
+                            if self.open_event_id is not None:
+                                self.open_event_behaviors.add(departed)
+                                slot_name = state.anchored_slot_name or "Vehicle"
+                                if f"departed:{slot_name}" not in self.event_notified_kinds:
+                                    self.event_notified_kinds.add(f"departed:{slot_name}")
+                                    self.notifier.notify(
+                                        event_id=self.open_event_id,
+                                        camera=self.cam.name,
+                                        kind="vehicle",
+                                        title=f"{slot_name} departed from {self.cam.name}",
+                                        body=f"{slot_name} departed from {self.cam.name}",
+                                    )
+                elif state.is_anchored and state.anchored_slot_name:
+                    # Check if slot is still occupied by another detection (e.g. temporary occlusion by passing car)
+                    matched_slot = None
+                    for sl in self.scenery.get_slots(self.cam.name):
+                        if sl.name == state.anchored_slot_name:
+                            matched_slot = sl
+                            break
+                    slot_occupied = False
+                    if matched_slot is not None:
+                        slot_occupied = self.scenery.is_slot_occupied(matched_slot, relevant_dets, frame_w, frame_h)
+
+                    if not slot_occupied:
                         state.is_anchored = False
                         departed = "vehicle_departed"
                         state.behaviors.add(departed)
@@ -226,23 +266,7 @@ class EventManager:
                                     title=f"{slot_name} departed from {self.cam.name}",
                                     body=f"{slot_name} departed from {self.cam.name}",
                                 )
-                elif state.is_anchored:
-                    # Vehicle was anchored, but no longer matches slot (drove away)
-                    state.is_anchored = False
-                    departed = "vehicle_departed"
-                    state.behaviors.add(departed)
-                    if self.open_event_id is not None:
-                        self.open_event_behaviors.add(departed)
-                        slot_name = state.anchored_slot_name or "Vehicle"
-                        if f"departed:{slot_name}" not in self.event_notified_kinds:
-                            self.event_notified_kinds.add(f"departed:{slot_name}")
-                            self.notifier.notify(
-                                event_id=self.open_event_id,
-                                camera=self.cam.name,
-                                kind="vehicle",
-                                title=f"{slot_name} departed from {self.cam.name}",
-                                body=f"{slot_name} departed from {self.cam.name}",
-                            )
+
             observe(state, now, d, self.cam.zones, frame_w, frame_h, fps=self.cfg.analysis.fps)
 
         # 2. Track qualification
@@ -367,14 +391,16 @@ class EventManager:
 
                             # Notifications per behavior
                             if b == "approaching" and "approaching" not in self.event_notified_kinds:
-                                self.event_notified_kinds.add("approaching")
-                                self.notifier.notify(
-                                    event_id=self.open_event_id,
-                                    camera=self.cam.name,
-                                    kind="approaching",
-                                    title=f"{s.class_name.capitalize()} approaching {self.cam.name}",
-                                    body=f"{s.class_name.capitalize()} approaching {self.cam.name}",
-                                )
+                                # Only notify approaching for classes configured in notify_classes (e.g. person, animal)
+                                if s.class_name in self.cfg.notifications.notify_classes:
+                                    self.event_notified_kinds.add("approaching")
+                                    self.notifier.notify(
+                                        event_id=self.open_event_id,
+                                        camera=self.cam.name,
+                                        kind="approaching",
+                                        title=f"{s.class_name.capitalize()} approaching {self.cam.name}",
+                                        body=f"{s.class_name.capitalize()} approaching {self.cam.name}",
+                                    )
                             elif b == "loitering" and "loitering" not in self.event_notified_kinds:
                                 self.event_notified_kinds.add("loitering")
                                 self.notifier.notify(
