@@ -88,7 +88,10 @@ class CameraWorker(threading.Thread):
                 t, frame = item
                 frame_h, frame_w = frame.shape[:2]
                 event_active = self.manager.open_event_id is not None
-                active_tracks = len([tr for tr in self.manager.tracks.values() if t - tr.last_seen < 4.0])
+                active_tracks = len([
+                    tr for tr in self.manager.tracks.values()
+                    if (t - tr.last_seen < 4.0) and not tr.is_anchored
+                ])
 
                 should_infer, mode, target_fps = self.fps_controller.should_infer(
                     now=t,
