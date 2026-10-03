@@ -27,6 +27,7 @@ cameras:
     gpu: 0
     zones:
       - {name: property, type: entry, polygon: [[0.12, 0.30], [1.0, 0.30], [1.0, 1.0], [0.05, 1.0]]}
+      - {name: engine_pile, type: ignore, polygon: [[0.65, 0.55], [1.0, 0.55], [1.0, 1.0], [0.65, 1.0]]}
   - name: Camera B
     url: "${CAM_CAMB_URL}"
     gpu: 1

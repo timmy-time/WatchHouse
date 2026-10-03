@@ -46,6 +46,22 @@ def _classify_category(class_name: str) -> str:
     if class_name in ANIMAL_CLASSES:
         return "animal"
     return "vehicle"
+def _is_in_ignore_zone(
+    bbox_xyxy: Tuple[float, float, float, float],
+    zones: List[Zone],
+    frame_w: int,
+    frame_h: int,
+) -> bool:
+    """Check if detection center falls inside an ignore/exclusion zone."""
+    from engine.behavior import point_in_polygon
+    cx = ((bbox_xyxy[0] + bbox_xyxy[2]) / 2.0) / frame_w
+    cy = ((bbox_xyxy[1] + bbox_xyxy[3]) / 2.0) / frame_h
+    for z in zones:
+        if z.type == "ignore" and point_in_polygon(cx, cy, z.polygon):
+            return True
+    return False
+
+
 
 
 def _draw_annotation(
@@ -78,21 +94,23 @@ def _draw_annotation(
                 1,
             )
 
-    # Draw zones in yellow
+    # Draw zones (yellow for entry, gray for ignore)
     for zone in zones:
         if len(zone.polygon) >= 3:
             pts = np.array(
                 [[int(pt[0] * frame_w), int(pt[1] * frame_h)] for pt in zone.polygon],
                 dtype=np.int32,
             )
-            cv2.polylines(canvas, [pts], isClosed=True, color=(0, 255, 255), thickness=2)
+            color = (80, 80, 80) if zone.type == "ignore" else (0, 255, 255)
+            cv2.polylines(canvas, [pts], isClosed=True, color=color, thickness=2)
+            label = f"Ignore: {zone.name}" if zone.type == "ignore" else zone.name
             cv2.putText(
                 canvas,
-                zone.name,
+                label,
                 (pts[0][0], max(20, pts[0][1] - 10)),
                 cv2.FONT_HERSHEY_SIMPLEX,
                 0.5,
-                (0, 255, 255),
+                color,
                 1,
             )
 
@@ -173,7 +191,9 @@ class EventManager:
         # 1. Update / create TrackStates for relevant classes
         relevant_dets = [
             d for d in dets
-            if d.track_id > 0 and (d.class_name in HIGH_VALUE_CLASSES or d.class_name in VEHICLE_CLASSES)
+            if d.track_id > 0
+            and (d.class_name in HIGH_VALUE_CLASSES or d.class_name in VEHICLE_CLASSES)
+            and not _is_in_ignore_zone(d.bbox_xyxy, self.cam.zones, frame_w, frame_h)
         ]
 
         for d in relevant_dets:

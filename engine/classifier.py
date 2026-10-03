@@ -315,5 +315,12 @@ LIVE_MIN_VEHICLE_FRAMES = 5
 
 def track_qualifies_live(summary: TrackSummary) -> bool:
     if summary.is_high_value:
+        # Inanimate stationary object filter (e.g. engine blocks, tire piles, garden ornaments):
+        # If a person track is frozen static (IoU >= 0.80, displacement <= 0.08) with marginal confidence (< 0.60),
+        # it is an inanimate false positive, not a living person.
+        if summary.class_name == "person":
+            if summary.frame_count >= 4 and summary.min_iou_start >= 0.80 and summary.normalized_displacement <= 0.08:
+                if summary.avg_confidence < 0.60:
+                    return False
         return summary.frame_count >= LIVE_MIN_HIGH_VALUE_FRAMES and summary.avg_confidence >= LIVE_MIN_HIGH_VALUE_CONF
     return summary.is_moving_vehicle and summary.frame_count >= LIVE_MIN_VEHICLE_FRAMES

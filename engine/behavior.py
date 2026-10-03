@@ -123,12 +123,17 @@ def detect_behaviors(
         median_h = max(1.0, statistics.median(heights)) if heights else 1.0
 
         # Loitering: duration >= 45s and distance from first_center < 1.5 * median_h
+        # Must be a qualified track; completely frozen low-confidence tracks (dist < 25px and conf < 0.65)
+        # are inanimate clutter, not a living person loitering.
         if (state.last_seen - state.first_seen) >= 45.0:
             cur_det = state.window[-1][1]
             cur_cx = (cur_det.bbox_xyxy[0] + cur_det.bbox_xyxy[2]) / 2.0
             cur_cy = (cur_det.bbox_xyxy[1] + cur_det.bbox_xyxy[3]) / 2.0
             dist = math.hypot(cur_cx - state.first_center[0], cur_cy - state.first_center[1])
-            if dist < 1.5 * median_h:
+            confs = [d.confidence for _, d in state.window]
+            avg_conf = sum(confs) / max(1, len(confs))
+            is_inanimate = dist < 25.0 and avg_conf < 0.65
+            if (dist < 1.5 * median_h) and not is_inanimate:
                 new_behaviors.add("loitering")
 
         # Running: window observations in the last 2.0s >= 5 and

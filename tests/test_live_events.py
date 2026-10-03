@@ -204,6 +204,27 @@ class TestLiveEvents(unittest.TestCase):
         self.assertIsNotNone(self.manager.open_event_id)
         self.assertIn("vehicle_departed", self.manager.open_event_behaviors)
 
+    def test_ignore_mask_suppresses_detection(self):
+        from engine.behavior import Zone
+        # Add an ignore zone covering [0.65, 0.55] to [1.0, 1.0] (engine pile location)
+        ignore_zone = Zone(
+            name="engine_pile",
+            type="ignore",
+            polygon=[(0.65, 0.55), (1.0, 0.55), (1.0, 1.0), (0.65, 1.0)],
+        )
+        self.cam.zones.append(ignore_zone)
+
+        # Detection center inside ignore mask: [1300, 630, 1880, 1070]
+        engine_box = (1300.0, 630.0, 1880.0, 1070.0)
+        for i in range(10):
+            now = i * 0.2
+            det = self._make_det(track_id=16, class_name="person", frame_idx=i, bbox=engine_box, conf=0.75)
+            self.manager.process(frame=None, dets=[det], now=now, frame_w=1920, frame_h=1080)
+
+        # Should be filtered out by ignore zone, zero events opened
+        self.assertIsNone(self.manager.open_event_id)
+        self.assertEqual(len(self.manager.tracks), 0)
+
 
 if __name__ == "__main__":
     unittest.main()

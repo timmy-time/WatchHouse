@@ -107,5 +107,48 @@ class TestClassifier(unittest.TestCase):
         self.assertEqual(decision.primary_reason, "no_objects_detected")
 
 
+    def test_stationary_inanimate_person_suppressed(self):
+        from engine.classifier import extract_track_features, track_qualifies_live
+        # Synthetic inanimate object (engine/tire pile) detected as 'person':
+        # Conf = 0.48, 8 frames, stationary (slight jitter < 5px)
+        dets = []
+        base_box = (1300.0, 630.0, 1880.0, 1070.0)
+        for i in range(8):
+            jitter = (i % 2) * 2.0
+            d = TrackDetection(
+                track_id=16,
+                class_name="person",
+                confidence=0.48,
+                bbox_xyxy=(base_box[0] + jitter, base_box[1], base_box[2] + jitter, base_box[3]),
+                bbox_xywh=(1590.0, 850.0, 580.0, 440.0),
+                frame_idx=i,
+            )
+            dets.append(d)
+
+        summary = extract_track_features(16, dets, 8)
+        self.assertTrue(summary.min_iou_start >= 0.80)
+        self.assertTrue(summary.normalized_displacement <= 0.08)
+        # Must be suppressed by inanimate object filter!
+        self.assertFalse(track_qualifies_live(summary))
+
+    def test_real_person_qualifies(self):
+        from engine.classifier import extract_track_features, track_qualifies_live
+        # Real walking person (displacement > 100px)
+        dets = []
+        for i in range(8):
+            step = i * 20.0
+            d = TrackDetection(
+                track_id=20,
+                class_name="person",
+                confidence=0.55,
+                bbox_xyxy=(200.0 + step, 300.0, 280.0 + step, 500.0),
+                bbox_xywh=(240.0 + step, 400.0, 80.0, 200.0),
+                frame_idx=i,
+            )
+            dets.append(d)
+
+        summary = extract_track_features(20, dets, 8)
+        self.assertTrue(track_qualifies_live(summary))
+
 if __name__ == "__main__":
     unittest.main()
