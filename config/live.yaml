@@ -1,0 +1,39 @@
+recording:
+  root: /data/recordings
+  segment_seconds: 10
+  ring_minutes: 15
+analysis:
+  fps: 5
+  model: yolov8n.pt
+  confidence: 0.30
+  pre_roll_seconds: 5
+  post_roll_seconds: 10
+  max_event_seconds: 300
+faces:
+  enabled: true
+  min_face_px: 40
+  min_det_score: 0.80
+  match_threshold: 0.40
+  cluster_threshold: 0.45
+notifications:
+  cooldown_seconds: 60
+  dashboard_url: "${DASHBOARD_URL}"
+  notify_classes: [person, dog, cat, bear, horse, cow, sheep]
+  ntfy: {url: "${NTFY_URL}", topic: "${NTFY_TOPIC}", token: "${NTFY_TOKEN}"}
+  webhook: {url: "${WEBHOOK_URL}"}
+cameras:
+  - name: Camera A
+    url: "${CAM_CAMA_URL}"
+    gpu: 0
+    zones:
+      - {name: property, type: entry, polygon: [[0.12, 0.30], [1.0, 0.30], [1.0, 1.0], [0.05, 1.0]]}
+  - name: Camera B
+    url: "${CAM_CAMB_URL}"
+    gpu: 1
+    zones:
+      - {name: lawn, type: entry, polygon: [[0.0, 0.34], [0.80, 0.34], [0.80, 1.0], [0.0, 1.0]]}
+  - name: Camera C
+    url: "${CAM_CAMC_URL}"
+    gpu: 0
+    zones:
+      - {name: porch, type: entry, polygon: [[0.20, 0.60], [0.60, 0.60], [0.60, 1.0], [0.20, 1.0]]}

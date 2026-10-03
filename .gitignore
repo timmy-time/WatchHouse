@@ -1,0 +1,25 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Environments & credentials
+.env
+.venv/
+env/
+venv/
+
+# Large media directories & runtime data
+clips/
+output/
+recordings/
+
+# Model weights
+*.pt
+*.onnx
+
+# System & editor files
+.DS_Store
+*.swp
+*.swo

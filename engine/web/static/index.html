@@ -1,0 +1,138 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>CCTV Live Analytics & Dashboard</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <div id="app">
+    <!-- Top Navigation -->
+    <header class="navbar">
+      <div class="nav-brand">
+        <span class="brand-icon">📹</span>
+        <span class="brand-title">CCTV Analytics</span>
+      </div>
+      <nav class="nav-links">
+        <a href="#/live" class="nav-link" id="nav-live">Live Streams</a>
+        <a href="#/events" class="nav-link" id="nav-events">Events</a>
+        <a href="#/faces" class="nav-link" id="nav-faces">Face Gallery</a>
+        <a href="#/archive" class="nav-link" id="nav-archive">Archive</a>
+      </nav>
+      <div class="nav-actions">
+        <button id="btn-browser-notifications" class="btn btn-sm btn-outline">Enable browser alerts</button>
+      </div>
+    </header>
+
+    <!-- Main Container -->
+    <main class="content-container">
+      <!-- Live View -->
+      <section id="view-live" class="view hidden">
+        <div class="live-layout">
+          <div class="live-streams" id="live-streams-grid">
+            <!-- Camera stream tiles rendered here -->
+          </div>
+          <aside class="live-feed">
+            <h3 class="feed-title">Real-Time Event Feed</h3>
+            <div class="feed-list" id="live-feed-list">
+              <!-- Live events appended via SSE -->
+            </div>
+          </aside>
+        </div>
+      </section>
+
+      <!-- Events View -->
+      <section id="view-events" class="view hidden">
+        <div class="filter-bar">
+          <select id="event-filter-camera" class="form-control">
+            <option value="">All Cameras</option>
+          </select>
+          <select id="event-filter-behavior" class="form-control">
+            <option value="">All Behaviors</option>
+            <option value="approaching">approaching</option>
+            <option value="loitering">loitering</option>
+            <option value="running">running</option>
+            <option value="passing_by">passing_by</option>
+            <option value="vehicle_arrived">vehicle_arrived</option>
+            <option value="vehicle_departed">vehicle_departed</option>
+            <option value="vehicle_passing">vehicle_passing</option>
+            <option value="animal_present">animal_present</option>
+          </select>
+          <select id="event-filter-identity" class="form-control">
+            <option value="">All Identities</option>
+          </select>
+          <input type="date" id="event-filter-date" class="form-control">
+          <button id="event-filter-apply" class="btn btn-primary">Apply</button>
+          <button id="event-filter-reset" class="btn btn-outline">Reset</button>
+        </div>
+        <div class="events-grid" id="events-grid">
+          <!-- Event cards -->
+        </div>
+        <div class="pagination-bar" id="events-pagination"></div>
+      </section>
+
+      <!-- Faces View -->
+      <section id="view-faces" class="view hidden">
+        <div class="faces-section">
+          <div class="section-header">
+            <h2>Known Identities</h2>
+            <button id="btn-new-identity" class="btn btn-primary btn-sm">+ New Identity</button>
+          </div>
+          <div class="identities-grid" id="identities-grid">
+            <!-- Identities cards -->
+          </div>
+        </div>
+
+        <div class="faces-section">
+          <div class="section-header">
+            <h2>Unknown Face Clusters</h2>
+          </div>
+          <div class="clusters-grid" id="clusters-grid">
+            <!-- Unknown clusters -->
+          </div>
+        </div>
+        <datalist id="identities-datalist"></datalist>
+      </section>
+
+      <!-- Archive View -->
+      <section id="view-archive" class="view hidden">
+        <div class="archive-summary" id="archive-summary">
+          <!-- Summary chips -->
+        </div>
+        <div class="filter-bar">
+          <select id="archive-filter-verdict" class="form-control">
+            <option value="">All Verdicts</option>
+            <option value="KEEP">KEEP</option>
+            <option value="DISCARD">DISCARD</option>
+          </select>
+          <select id="archive-filter-camera" class="form-control">
+            <option value="">All Cameras</option>
+          </select>
+          <input type="text" id="archive-filter-reason" class="form-control" placeholder="Filter reason...">
+          <button id="archive-filter-apply" class="btn btn-primary">Apply</button>
+          <button id="archive-filter-reset" class="btn btn-outline">Reset</button>
+        </div>
+        <div class="archive-grid" id="archive-grid">
+          <!-- Archive clip cards -->
+        </div>
+        <div class="pagination-bar" id="archive-pagination"></div>
+      </section>
+    </main>
+
+    <!-- Global Video / Event Modal -->
+    <div id="modal" class="modal hidden">
+      <div class="modal-backdrop" id="modal-backdrop"></div>
+      <div class="modal-content">
+        <button class="modal-close" id="modal-close">&times;</button>
+        <div class="modal-body" id="modal-body"></div>
+      </div>
+    </div>
+
+    <!-- Toast Notifications Container -->
+    <div id="toasts-container" class="toasts-container"></div>
+  </div>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>

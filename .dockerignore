@@ -1,0 +1,7 @@
+clips
+output
+*.pt
+__pycache__
+*.pyc
+.git
+recordings
