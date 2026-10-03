@@ -5,6 +5,7 @@ import json
 import logging
 import math
 import threading
+import time
 from typing import Dict, List, Optional, Tuple
 
 import cv2
@@ -179,6 +180,7 @@ class SceneryManager:
         self.store = store
         self.lock = threading.RLock()
         self.slots_by_camera: Dict[str, List[VehicleSlot]] = {}
+        self.last_reload = 0.0
         self.reload()
 
     def reload(self) -> None:
@@ -209,9 +211,12 @@ class SceneryManager:
                 except Exception as exc:
                     logger.warning(f"Failed to parse vehicle slot {r.get('id')}: {exc}")
 
+            self.last_reload = time.time()
             self.slots_by_camera = grouped
 
     def get_slots(self, camera: str) -> List[VehicleSlot]:
+        if time.time() - self.last_reload > 10.0:
+            self.reload()
         with self.lock:
             return list(self.slots_by_camera.get(camera, []))
 
