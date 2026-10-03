@@ -19,6 +19,9 @@ from engine.live.events import EventManager
 from engine.live.notify import Notifier
 from engine.live.stream import CameraStream
 from engine.scenery import SceneryManager
+import cv2
+from engine.live.dynamic_fps import DynamicFpsController
+from engine.live.scheduler import GpuScheduler
 
 logger = logging.getLogger(__name__)
 
@@ -50,6 +53,7 @@ class CameraWorker(threading.Thread):
         self.stop_event = threading.Event()
         self.fps_analyzed = 0.0
         self.last_frame_at = 0.0
+        self.fps_controller = DynamicFpsController(cfg.analysis.dynamic_fps)
 
         self.stream = CameraStream(cam, cfg.recording, fps=cfg.analysis.fps)
         self.detector = ClipDetector(model_path=cfg.analysis.model, device=cam.gpu)
@@ -83,24 +87,53 @@ class CameraWorker(threading.Thread):
 
                 t, frame = item
                 frame_h, frame_w = frame.shape[:2]
+                event_active = self.manager.open_event_id is not None
+                active_tracks = len([tr for tr in self.manager.tracks.values() if t - tr.last_seen < 4.0])
 
-                dets = self.detector.track_frame(
-                    frame,
-                    frame_idx=frame_idx,
-                    conf_threshold=self.cfg.analysis.confidence,
-                )
-                frame_idx += 1
-
-                self.manager.process(
-                    frame=frame,
-                    dets=dets,
+                should_infer, mode, target_fps = self.fps_controller.should_infer(
                     now=t,
-                    frame_w=frame_w,
-                    frame_h=frame_h,
+                    frame=frame,
+                    event_active=event_active,
+                    active_tracks=active_tracks,
                 )
+
+                if should_infer:
+                    dets = self.detector.track_frame(
+                        frame,
+                        frame_idx=frame_idx,
+                        conf_threshold=self.cfg.analysis.confidence,
+                    )
+                    frame_idx += 1
+
+                    self.manager.process(
+                        frame=frame,
+                        dets=dets,
+                        now=t,
+                        frame_w=frame_w,
+                        frame_h=frame_h,
+                    )
+
+                    self.last_frame_at = t
+                    fps_count += 1
+                else:
+                    # During idle skipped frames, update preview if needed
+                    if frame is not None and (t - self.manager.last_preview_time) >= 0.5:
+                        self.manager.last_preview_time = t
+                        try:
+                            prev_rel = f"live/preview/{self.cam.slug}.jpg"
+                            full_prev = os.path.join(self.output_dir, prev_rel)
+                            os.makedirs(os.path.dirname(full_prev), exist_ok=True)
+                            slots = self.manager.scenery.get_slots(self.cam.name) if self.manager.scenery else None
+                            from engine.live.events import _draw_annotation
+                            ann = _draw_annotation(frame, [], self.cam.zones, frame_w, frame_h, slots=slots, track_states=self.manager.tracks)
+                            resized_prev = cv2.resize(ann, (960, 540))
+                            tmp_prev = full_prev + ".tmp.jpg"
+                            cv2.imwrite(tmp_prev, resized_prev, [int(cv2.IMWRITE_JPEG_QUALITY), 70])
+                            os.replace(tmp_prev, full_prev)
+                        except Exception:
+                            pass
 
                 self.last_frame_at = t
-                fps_count += 1
                 now = time.time()
                 if now - fps_start >= 5.0:
                     self.fps_analyzed = round(fps_count / (now - fps_start), 1)
@@ -161,9 +194,14 @@ def run_live(config_path: str, output_dir: str) -> int:
         cluster_threshold=cfg.faces.cluster_threshold,
     )
     scenery = SceneryManager(store)
+    gpu_scheduler = GpuScheduler()
 
     model_dir = os.environ.get("FACE_MODEL_DIR", "/opt/models")
     workers: List[CameraWorker] = []
+
+    for cam in active_cams:
+        assigned_gpu = gpu_scheduler.assign_camera(cam.name, cam.gpu)
+        cam.gpu = assigned_gpu
 
     for cam in active_cams:
         face_engine = None
@@ -206,10 +244,18 @@ def run_live(config_path: str, output_dir: str) -> int:
         while not stop_event.is_set():
             status_data = {
                 "updated_at": time.time(),
+                "gpus": gpu_scheduler.poll_metrics(),
                 "cameras": {
                     w.cam.name: {
                         "slug": w.cam.slug,
                         **w.stream.status(),
+                        "gpu": w.cam.gpu,
+                        "mode": w.fps_controller.current_mode,
+                        "target_fps": (
+                            w.fps_controller.cfg.boost_fps
+                            if w.fps_controller.current_mode == "boost"
+                            else w.fps_controller.cfg.idle_fps
+                        ),
                         "fps_analyzed": w.fps_analyzed,
                         "open_event_id": w.manager.open_event_id,
                         "last_frame_at": w.last_frame_at,
@@ -217,7 +263,6 @@ def run_live(config_path: str, output_dir: str) -> int:
                     for w in workers
                 },
             }
-
             tmp_status = status_path + ".tmp"
             try:
                 with open(tmp_status, "w", encoding="utf-8") as f:

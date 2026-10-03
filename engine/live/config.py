@@ -8,6 +8,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import yaml
 
 from engine.behavior import Zone
+from engine.live.dynamic_fps import DynamicFpsConfig
 
 
 def _env_str(val: Any) -> str:
@@ -41,6 +42,7 @@ class AnalysisConfig:
     pre_roll_seconds: int = 5
     post_roll_seconds: int = 10
     max_event_seconds: int = 300
+    dynamic_fps: DynamicFpsConfig = field(default_factory=DynamicFpsConfig)
 
 
 @dataclass
@@ -79,7 +81,7 @@ class NotificationsConfig:
 class CameraConfig:
     name: str
     url: str
-    gpu: int = 0
+    gpu: Optional[int] = 0
     zones: List[Zone] = field(default_factory=list)
     slug: str = ""
 
@@ -116,6 +118,19 @@ def load_live_config(path: str) -> LiveConfig:
         pre_roll_seconds=int(ana_raw.get("pre_roll_seconds", 5)),
         post_roll_seconds=int(ana_raw.get("post_roll_seconds", 10)),
         max_event_seconds=int(ana_raw.get("max_event_seconds", 300)),
+        dynamic_fps=(
+            DynamicFpsConfig(enabled=bool(ana_raw.get("dynamic_fps")))
+            if isinstance(ana_raw.get("dynamic_fps"), bool)
+            else DynamicFpsConfig(
+                enabled=bool(ana_raw.get("dynamic_fps", {}).get("enabled", True)),
+                idle_fps=float(ana_raw.get("dynamic_fps", {}).get("idle_fps", 2.0)),
+                boost_fps=float(ana_raw.get("dynamic_fps", {}).get("boost_fps", 5.0)),
+                motion_threshold=float(ana_raw.get("dynamic_fps", {}).get("motion_threshold", 0.015)),
+                boost_cooldown=float(ana_raw.get("dynamic_fps", {}).get("boost_cooldown", 12.0)),
+            )
+            if isinstance(ana_raw.get("dynamic_fps"), dict)
+            else DynamicFpsConfig()
+        ),
     )
 
     faces_raw = raw.get("faces", {})
@@ -155,7 +170,14 @@ def load_live_config(path: str) -> LiveConfig:
     for c in raw.get("cameras", []):
         name = str(c.get("name", "Camera"))
         url = _env_str(c.get("url", ""))
-        gpu = int(c.get("gpu", 0))
+        gpu_raw = c.get("gpu")
+        if gpu_raw is None or str(gpu_raw).lower() in ("auto", "none"):
+            gpu = None
+        else:
+            try:
+                gpu = int(gpu_raw)
+            except ValueError:
+                gpu = None
         slug = slugify(name)
         zones: List[Zone] = []
         for z in c.get("zones", []):
