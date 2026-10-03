@@ -4,6 +4,7 @@ from dataclasses import asdict
 from datetime import datetime
 import json
 import logging
+import math
 import os
 from typing import Callable, Dict, List, Optional, Set, Tuple
 
@@ -28,6 +29,7 @@ from engine.faces import FaceEngine, FaceGallery
 from engine.live.config import CameraConfig, LiveConfig
 from engine.live.db import EventStore
 from engine.live.notify import Notifier
+from engine.scenery import SceneryManager, VehicleSlot
 
 logger = logging.getLogger(__name__)
 
@@ -52,9 +54,29 @@ def _draw_annotation(
     zones: List[Zone],
     frame_w: int,
     frame_h: int,
+    slots: Optional[List[VehicleSlot]] = None,
+    track_states: Optional[Dict[int, TrackState]] = None,
 ) -> np.ndarray:
-    """Draw bounding boxes and zone polygons onto a copy of the frame."""
+    """Draw bounding boxes, vehicle slots, and zone polygons onto a copy of the frame."""
     canvas = frame.copy()
+
+    # Draw registered vehicle slots in cyan
+    if slots:
+        for slot in slots:
+            sx1 = int(slot.box[0] * frame_w)
+            sy1 = int(slot.box[1] * frame_h)
+            sx2 = int(slot.box[2] * frame_w)
+            sy2 = int(slot.box[3] * frame_h)
+            cv2.rectangle(canvas, (sx1, sy1), (sx2, sy2), (255, 255, 0), 1)
+            cv2.putText(
+                canvas,
+                f"Slot: {slot.name}",
+                (sx1, max(15, sy1 - 4)),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.4,
+                (255, 255, 0),
+                1,
+            )
 
     # Draw zones in yellow
     for zone in zones:
@@ -77,15 +99,23 @@ def _draw_annotation(
     # Draw detections
     for d in dets:
         x1, y1, x2, y2 = map(int, d.bbox_xyxy)
-        if d.class_name in HIGH_VALUE_CLASSES:
+        state = track_states.get(d.track_id) if track_states else None
+
+        if state and state.anchored_slot_name:
+            # Anchored known vehicle (cyan/gold)
+            color = (255, 200, 0) if state.is_anchored else (0, 0, 255)
+            label = f"{state.anchored_slot_name} #{d.track_id} {d.confidence:.2f}"
+        elif d.class_name in HIGH_VALUE_CLASSES:
             color = (0, 255, 0)  # Green
+            label = f"{d.class_name} #{d.track_id} {d.confidence:.2f}"
         elif d.class_name in VEHICLE_CLASSES:
-            color = (0, 0, 255)  # Red for vehicles
+            color = (0, 0, 255)  # Red for moving vehicles
+            label = f"{d.class_name} #{d.track_id} {d.confidence:.2f}"
         else:
             color = (128, 128, 128)  # Gray
+            label = f"{d.class_name} #{d.track_id} {d.confidence:.2f}"
 
         cv2.rectangle(canvas, (x1, y1), (x2, y2), color, 2)
-        label = f"{d.class_name} #{d.track_id} {d.confidence:.2f}"
         cv2.putText(canvas, label, (x1, max(15, y1 - 8)), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1)
 
     return canvas
@@ -104,6 +134,7 @@ class EventManager:
         face_engine: Optional[FaceEngine] = None,
         gallery: Optional[FaceGallery] = None,
         on_closed: Optional[Callable[[int, float, float], None]] = None,
+        scenery: Optional[SceneryManager] = None,
     ):
         self.cam = cam
         self.cfg = cfg
@@ -113,6 +144,7 @@ class EventManager:
         self.face_engine = face_engine
         self.gallery = gallery
         self.on_closed = on_closed
+        self.scenery = scenery
 
         self.tracks: Dict[int, TrackState] = {}
         self.event_tracks: Dict[int, TrackState] = {}
@@ -160,6 +192,57 @@ class EventManager:
             else:
                 state = self.tracks[d.track_id]
 
+            # Scenery slot anchor check for vehicles
+            if self.scenery is not None and d.class_name in VEHICLE_CLASSES:
+                det_norm = (x1 / frame_w, y1 / frame_h, x2 / frame_w, y2 / frame_h)
+                matched = self.scenery.match_slot(self.cam.name, det_norm, frame=frame, det_box_px=d.bbox_xyxy)
+                if matched is not None:
+                    slot, score = matched
+                    state.anchored_slot_name = slot.name
+                    slot_cx = ((slot.box[0] + slot.box[2]) / 2.0) * frame_w
+                    slot_cy = ((slot.box[1] + slot.box[3]) / 2.0) * frame_h
+                    slot_w = (slot.box[2] - slot.box[0]) * frame_w
+                    state.slot_center = (slot_cx, slot_cy)
+
+                    dist_from_slot = math.hypot(center[0] - slot_cx, center[1] - slot_cy)
+                    if dist_from_slot < 0.65 * slot_w:
+                        # Anchored stationary inside slot: pin first center to fixed slot anchor
+                        state.first_center = (slot_cx, slot_cy)
+                        state.is_anchored = True
+                    elif state.is_anchored:
+                        # Vehicle was anchored and has now driven out of slot
+                        state.is_anchored = False
+                        departed = "vehicle_departed"
+                        state.behaviors.add(departed)
+                        if self.open_event_id is not None:
+                            self.open_event_behaviors.add(departed)
+                            slot_name = state.anchored_slot_name or "Vehicle"
+                            if f"departed:{slot_name}" not in self.event_notified_kinds:
+                                self.event_notified_kinds.add(f"departed:{slot_name}")
+                                self.notifier.notify(
+                                    event_id=self.open_event_id,
+                                    camera=self.cam.name,
+                                    kind="vehicle",
+                                    title=f"{slot_name} departed from {self.cam.name}",
+                                    body=f"{slot_name} departed from {self.cam.name}",
+                                )
+                elif state.is_anchored:
+                    # Vehicle was anchored, but no longer matches slot (drove away)
+                    state.is_anchored = False
+                    departed = "vehicle_departed"
+                    state.behaviors.add(departed)
+                    if self.open_event_id is not None:
+                        self.open_event_behaviors.add(departed)
+                        slot_name = state.anchored_slot_name or "Vehicle"
+                        if f"departed:{slot_name}" not in self.event_notified_kinds:
+                            self.event_notified_kinds.add(f"departed:{slot_name}")
+                            self.notifier.notify(
+                                event_id=self.open_event_id,
+                                camera=self.cam.name,
+                                kind="vehicle",
+                                title=f"{slot_name} departed from {self.cam.name}",
+                                body=f"{slot_name} departed from {self.cam.name}",
+                            )
             observe(state, now, d, self.cam.zones, frame_w, frame_h, fps=self.cfg.analysis.fps)
 
         # 2. Track qualification
@@ -172,6 +255,9 @@ class EventManager:
                     if track_qualifies_live(summary):
                         state.qualified = True
                 elif state.class_name in VEHICLE_CLASSES:
+                    # Anchored vehicles in friendly slots are suppressed from moving vehicle qualification
+                    if state.is_anchored:
+                        continue
                     # Check every 1.0s
                     if now - state.last_eval >= 1.0:
                         state.last_eval = now
@@ -221,7 +307,8 @@ class EventManager:
                 thumb_rel = f"events/{self.cam.slug}/{date_str}/{self.open_event_id}.jpg"
                 full_thumb = os.path.join(self.output_dir, thumb_rel)
                 os.makedirs(os.path.dirname(full_thumb), exist_ok=True)
-                ann = _draw_annotation(frame, relevant_dets, self.cam.zones, frame_w, frame_h)
+                slots = self.scenery.get_slots(self.cam.name) if self.scenery else None
+                ann = _draw_annotation(frame, relevant_dets, self.cam.zones, frame_w, frame_h, slots=slots, track_states=self.tracks)
                 resized_thumb = cv2.resize(ann, (1280, 720))
                 cv2.imwrite(full_thumb, resized_thumb, [int(cv2.IMWRITE_JPEG_QUALITY), 85])
                 self.store.update_event(self.open_event_id, thumb_path=thumb_rel)
@@ -534,7 +621,8 @@ class EventManager:
                 prev_rel = f"live/preview/{self.cam.slug}.jpg"
                 full_prev = os.path.join(self.output_dir, prev_rel)
                 os.makedirs(os.path.dirname(full_prev), exist_ok=True)
-                ann = _draw_annotation(frame, relevant_dets, self.cam.zones, frame_w, frame_h)
+                slots = self.scenery.get_slots(self.cam.name) if self.scenery else None
+                ann = _draw_annotation(frame, relevant_dets, self.cam.zones, frame_w, frame_h, slots=slots, track_states=self.tracks)
                 resized_prev = cv2.resize(ann, (960, 540))
                 tmp_prev = full_prev + ".tmp.jpg"
                 cv2.imwrite(tmp_prev, resized_prev, [int(cv2.IMWRITE_JPEG_QUALITY), 70])

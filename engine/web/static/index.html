@@ -18,8 +18,8 @@
         <a href="#/live" class="nav-link" id="nav-live">Live Streams</a>
         <a href="#/events" class="nav-link" id="nav-events">Events</a>
         <a href="#/faces" class="nav-link" id="nav-faces">Face Gallery</a>
+        <a href="#/scenery" class="nav-link" id="nav-scenery">Scenery & Vehicles</a>
         <a href="#/archive" class="nav-link" id="nav-archive">Archive</a>
-      </nav>
       <div class="nav-actions">
         <button id="btn-browser-notifications" class="btn btn-sm btn-outline">Enable browser alerts</button>
       </div>
@@ -117,6 +117,77 @@
           <!-- Archive clip cards -->
         </div>
         <div class="pagination-bar" id="archive-pagination"></div>
+      </section>
+
+      <!-- Scenery & Vehicles View -->
+      <section id="view-scenery" class="view hidden">
+        <div class="section-header">
+          <h2>Persistent Scenery & Vehicle Anchors</h2>
+          <div style="display: flex; gap: 10px; align-items: center;">
+            <select id="scenery-camera-select" class="form-control">
+              <!-- Cameras -->
+            </select>
+          </div>
+        </div>
+
+        <div style="display: grid; grid-template-columns: 1fr 380px; gap: 20px;">
+          <!-- Camera Snapshot Preview with Visual Slot Overlays -->
+          <div class="camera-tile" style="overflow: visible;">
+            <div class="camera-header">
+              <span id="scenery-cam-title" style="font-weight: 600;">Camera View</span>
+              <button id="btn-refresh-scenery-snap" class="btn btn-outline btn-sm">Refresh Snapshot</button>
+            </div>
+            <div id="scenery-canvas-container" style="position: relative; width: 100%; aspect-ratio: 16/9; background: #000; overflow: hidden; border-radius: 0 0 6px 6px;">
+              <img id="scenery-snap-img" style="width: 100%; height: 100%; object-fit: contain; display: block;" alt="Snapshot">
+              <canvas id="scenery-overlay-canvas" style="position: absolute; inset: 0; width: 100%; height: 100%; cursor: crosshair;"></canvas>
+            </div>
+            <div style="padding: 10px 14px; font-size: 0.8rem; color: var(--muted);">
+              Click & drag on the image above to define a parking slot anchor, or enter coordinates manually below.
+            </div>
+          </div>
+
+          <!-- Add & Configure Slot Form -->
+          <div class="face-card" style="height: fit-content;">
+            <h3 style="font-size: 1rem; margin-bottom: 8px;">Register Vehicle Slot</h3>
+            <div style="display: flex; flex-direction: column; gap: 10px;">
+              <div>
+                <label style="font-size: 0.8rem; color: var(--muted);">Vehicle Name</label>
+                <input type="text" id="slot-name-input" class="form-control" placeholder="e.g. Parked Parked Car 1" style="width: 100%;">
+              </div>
+              <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px;">
+                <div>
+                  <label style="font-size: 0.8rem; color: var(--muted);">X1 (0..1)</label>
+                  <input type="number" step="0.01" id="slot-x1" class="form-control" style="width: 100%;">
+                </div>
+                <div>
+                  <label style="font-size: 0.8rem; color: var(--muted);">Y1 (0..1)</label>
+                  <input type="number" step="0.01" id="slot-y1" class="form-control" style="width: 100%;">
+                </div>
+                <div>
+                  <label style="font-size: 0.8rem; color: var(--muted);">X2 (0..1)</label>
+                  <input type="number" step="0.01" id="slot-x2" class="form-control" style="width: 100%;">
+                </div>
+                <div>
+                  <label style="font-size: 0.8rem; color: var(--muted);">Y2 (0..1)</label>
+                  <input type="number" step="0.01" id="slot-y2" class="form-control" style="width: 100%;">
+                </div>
+              </div>
+              <div style="display: flex; align-items: center; gap: 8px; margin-top: 4px;">
+                <input type="checkbox" id="slot-friendly-check" checked>
+                <label for="slot-friendly-check" style="font-size: 0.85rem;">Friendly (Suppress false alerts/clips)</label>
+              </div>
+              <button id="btn-save-slot" class="btn btn-primary" style="margin-top: 8px;">+ Save Vehicle Slot</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- Registered Slots Grid -->
+        <div style="margin-top: 24px;">
+          <h3 style="font-size: 1.1rem; margin-bottom: 12px;">Active Vehicle Slots</h3>
+          <div id="scenery-slots-grid" class="identities-grid">
+            <!-- Slot cards rendered here -->
+          </div>
+        </div>
       </section>
     </main>
 

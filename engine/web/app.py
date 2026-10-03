@@ -20,6 +20,7 @@ from fastapi.staticfiles import StaticFiles
 import numpy as np
 from pydantic import BaseModel
 
+from engine.scenery import SceneryManager, extract_vehicle_signature
 from engine.faces import FaceEngine
 from engine.live.config import load_live_config
 from engine.live.db import EventStore
@@ -83,6 +84,19 @@ class FaceAssign(BaseModel):
     identity_id: Optional[int] = None
 
 
+
+class SlotCreate(BaseModel):
+    camera: str
+    name: str
+    slot_box: List[float]  # [x1, y1, x2, y2] normalized
+    is_friendly: bool = True
+    color_name: Optional[str] = None
+
+
+class SlotUpdate(BaseModel):
+    name: Optional[str] = None
+    is_friendly: Optional[bool] = None
+
 def create_app(output_dir: str, clips_dir: str, config_path: str) -> FastAPI:
     """Create and configure FastAPI application for CCTV dashboard."""
     output_dir = os.path.abspath(output_dir)
@@ -100,6 +114,7 @@ def create_app(output_dir: str, clips_dir: str, config_path: str) -> FastAPI:
 
     db_path = os.path.join(output_dir, "live/events.db")
     store = EventStore(db_path)
+    scenery = SceneryManager(store)
 
     # Lazily initialize FaceEngine for photo uploads
     face_engine_lock = threading.Lock()
@@ -593,4 +608,104 @@ def create_app(output_dir: str, clips_dir: str, config_path: str) -> FastAPI:
             "context_url": f"/media/output/{ctx_rel}",
         }
 
+
+    # --- Scenery & Vehicle Slots API ---
+
+    @app.get("/api/scenery/slots")
+    async def scenery_slots_list(camera: Optional[str] = None):
+        raw = store.list_vehicle_slots(camera=camera)
+        res = []
+        for r in raw:
+            item = dict(r)
+            try:
+                item["slot_box"] = json.loads(item["slot_box"])
+            except Exception:
+                item["slot_box"] = []
+            try:
+                item["appearance_sig"] = json.loads(item["appearance_sig"])
+            except Exception:
+                item["appearance_sig"] = {}
+            res.append(item)
+        return res
+
+    @app.post("/api/scenery/slots", status_code=201)
+    async def scenery_slot_create(payload: SlotCreate):
+        name = payload.name.strip()
+        if not name:
+            raise HTTPException(status_code=422, detail="Slot name cannot be empty")
+        if len(payload.slot_box) != 4:
+            raise HTTPException(status_code=422, detail="slot_box must be [x1, y1, x2, y2]")
+
+        from engine.live.config import slugify
+        slug = slugify(payload.camera)
+        preview_p = os.path.join(output_dir, f"live/preview/{slug}.jpg")
+
+        color_name = payload.color_name or "unknown"
+        sig_data = {"aspect_ratio": 1.5, "hsv_bins": []}
+
+        if os.path.exists(preview_p):
+            frame = cv2.imread(preview_p)
+            if frame is not None:
+                fh, fw = frame.shape[:2]
+                box_px = (
+                    payload.slot_box[0] * fw,
+                    payload.slot_box[1] * fh,
+                    payload.slot_box[2] * fw,
+                    payload.slot_box[3] * fh,
+                )
+                sig = extract_vehicle_signature(frame, box_px)
+                color_name = sig.color_name
+                sig_data = {
+                    "aspect_ratio": sig.aspect_ratio,
+                    "hsv_bins": sig.hsv_bins,
+                }
+
+        slot_id = store.create_vehicle_slot(
+            camera=payload.camera,
+            name=name,
+            slot_box=json.dumps(payload.slot_box),
+            color_name=color_name,
+            appearance_sig=json.dumps(sig_data),
+            is_friendly=1 if payload.is_friendly else 0,
+        )
+        scenery.reload()
+        return {
+            "id": slot_id,
+            "camera": payload.camera,
+            "name": name,
+            "slot_box": payload.slot_box,
+            "color_name": color_name,
+            "appearance_sig": sig_data,
+            "is_friendly": payload.is_friendly,
+        }
+
+    @app.patch("/api/scenery/slots/{slot_id}")
+    async def scenery_slot_update(slot_id: int, payload: SlotUpdate):
+        slot = store.get_vehicle_slot(slot_id)
+        if not slot:
+            raise HTTPException(status_code=404, detail="Slot not found")
+        fields = {}
+        if payload.name is not None:
+            fields["name"] = payload.name.strip()
+        if payload.is_friendly is not None:
+            fields["is_friendly"] = 1 if payload.is_friendly else 0
+        if fields:
+            store.update_vehicle_slot(slot_id, **fields)
+            scenery.reload()
+        updated = store.get_vehicle_slot(slot_id)
+        res = dict(updated)
+        try:
+            res["slot_box"] = json.loads(res["slot_box"])
+            res["appearance_sig"] = json.loads(res["appearance_sig"])
+        except Exception:
+            pass
+        return res
+
+    @app.delete("/api/scenery/slots/{slot_id}")
+    async def scenery_slot_delete(slot_id: int):
+        ok = store.delete_vehicle_slot(slot_id)
+        if not ok:
+            raise HTTPException(status_code=404, detail="Slot not found")
+        scenery.reload()
+        return {"ok": True}
     return app

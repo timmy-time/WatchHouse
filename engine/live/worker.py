@@ -18,6 +18,7 @@ from engine.live.db import EventStore
 from engine.live.events import EventManager
 from engine.live.notify import Notifier
 from engine.live.stream import CameraStream
+from engine.scenery import SceneryManager
 
 logger = logging.getLogger(__name__)
 
@@ -34,6 +35,7 @@ class CameraWorker(threading.Thread):
         output_dir: str,
         face_engine: Optional[FaceEngine],
         gallery: FaceGallery,
+        scenery: Optional[SceneryManager] = None,
     ):
         super().__init__(name=f"Worker-{cam.slug}", daemon=True)
         self.cam = cam
@@ -43,6 +45,7 @@ class CameraWorker(threading.Thread):
         self.output_dir = output_dir
         self.face_engine = face_engine
         self.gallery = gallery
+        self.scenery = scenery
 
         self.stop_event = threading.Event()
         self.fps_analyzed = 0.0
@@ -60,6 +63,7 @@ class CameraWorker(threading.Thread):
             face_engine=face_engine,
             gallery=gallery,
             on_closed=self.finalizer.enqueue,
+            scenery=scenery,
         )
 
     def run(self) -> None:
@@ -156,6 +160,7 @@ def run_live(config_path: str, output_dir: str) -> int:
         match_threshold=cfg.faces.match_threshold,
         cluster_threshold=cfg.faces.cluster_threshold,
     )
+    scenery = SceneryManager(store)
 
     model_dir = os.environ.get("FACE_MODEL_DIR", "/opt/models")
     workers: List[CameraWorker] = []
@@ -180,6 +185,7 @@ def run_live(config_path: str, output_dir: str) -> int:
             output_dir=output_dir,
             face_engine=face_engine,
             gallery=gallery,
+            scenery=scenery,
         )
         workers.append(worker)
         worker.start()

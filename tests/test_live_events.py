@@ -158,6 +158,52 @@ class TestLiveEvents(unittest.TestCase):
         self.assertIsNotNone(self.manager.open_event_id)
         self.assertNotEqual(self.manager.open_event_id, first_closed[0])
 
+    def test_anchored_vehicle_suppressed_and_departed(self):
+        import json
+        from engine.scenery import SceneryManager
+
+        # Register a slot for Camera C: [0.1, 0.1, 0.3, 0.3]
+        slot_box = [0.10, 0.10, 0.30, 0.30]
+        self.store.create_vehicle_slot(
+            camera="Camera C",
+            name="Parked Car 1",
+            slot_box=json.dumps(slot_box),
+            color_name="red",
+            appearance_sig=json.dumps({"aspect_ratio": 1.5, "hsv_bins": []}),
+            is_friendly=1,
+        )
+        scenery = SceneryManager(self.store)
+        self.manager.scenery = scenery
+
+        # 1. Car sitting in the slot in pixels (frame 1920x1080)
+        # Slot in pixels: [192, 108, 576, 324]
+        car_box = (200.0, 115.0, 560.0, 315.0)
+
+        # Run 50 frames with jitter (simulating wind/shadows)
+        for i in range(50):
+            now = i * 0.2
+            jitter_x = (i % 3) * 5.0
+            b = (car_box[0] + jitter_x, car_box[1], car_box[2] + jitter_x, car_box[3])
+            det = self._make_det(track_id=10, class_name="car", frame_idx=i, bbox=b, conf=0.85)
+            self.manager.process(frame=None, dets=[det], now=now, frame_w=1920, frame_h=1080)
+
+        # Vehicle is anchored -> must NOT open any event
+        self.assertIsNone(self.manager.open_event_id)
+        self.assertEqual(len(self.notifier.calls), 0)
+
+        # 2. Car drives out of slot: moved far away to [1200, 500, 1560, 700]
+        for i in range(50, 70):
+            now = i * 0.2
+            # Moving away
+            step = (i - 50) * 40.0
+            move_b = (car_box[0] + step, car_box[1] + step, car_box[2] + step, car_box[3] + step)
+            det = self._make_det(track_id=10, class_name="car", frame_idx=i, bbox=move_b, conf=0.85)
+            self.manager.process(frame=None, dets=[det], now=now, frame_w=1920, frame_h=1080)
+
+        # Moving vehicle event opens with departed behavior
+        self.assertIsNotNone(self.manager.open_event_id)
+        self.assertIn("vehicle_departed", self.manager.open_event_behaviors)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -201,6 +201,45 @@ class TestWebApi(unittest.TestCase):
         self.assertEqual(res2.json()["total"], 1)
         self.assertEqual(res2.json()["items"][0]["id"], eid2)
 
+    def test_scenery_slots_api(self):
+        # Create slot
+        res = self.client.post(
+            "/api/scenery/slots",
+            json={
+                "camera": "Camera A",
+                "name": "Parked Parked Car 1",
+                "slot_box": [0.15, 0.35, 0.55, 0.75],
+                "is_friendly": True,
+                "color_name": "red",
+            },
+        )
+        self.assertEqual(res.status_code, 201)
+        slot = res.json()
+        self.assertEqual(slot["name"], "Parked Parked Car 1")
+        slot_id = slot["id"]
+
+        # List slots
+        res_list = self.client.get("/api/scenery/slots?camera=Camera A")
+        self.assertEqual(res_list.status_code, 200)
+        self.assertEqual(len(res_list.json()), 1)
+        self.assertEqual(res_list.json()[0]["color_name"], "red")
+
+        # Update slot
+        res_patch = self.client.patch(
+            f"/api/scenery/slots/{slot_id}",
+            json={"name": "Parked Car 1"},
+        )
+        self.assertEqual(res_patch.status_code, 200)
+        self.assertEqual(res_patch.json()["name"], "Parked Car 1")
+
+        # Delete slot
+        res_del = self.client.delete(f"/api/scenery/slots/{slot_id}")
+        self.assertEqual(res_del.status_code, 200)
+
+        # Verify deleted
+        res_del404 = self.client.delete(f"/api/scenery/slots/{slot_id}")
+        self.assertEqual(res_del404.status_code, 404)
+
 
 if __name__ == "__main__":
     unittest.main()

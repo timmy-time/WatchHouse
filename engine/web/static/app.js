@@ -51,6 +51,9 @@ function handleRoute() {
   } else if (hash.startsWith("#/faces")) {
     document.getElementById("view-faces").classList.remove("hidden");
     loadFacesView();
+  } else if (hash.startsWith("#/scenery")) {
+    document.getElementById("view-scenery").classList.remove("hidden");
+    loadSceneryView();
   } else if (hash.startsWith("#/archive")) {
     document.getElementById("view-archive").classList.remove("hidden");
     loadArchiveView();
@@ -580,6 +583,281 @@ function renderClusters(items) {
     };
 
     grid.appendChild(card);
+  });
+}
+
+// Scenery & Vehicle Anchors View
+let currentSceneryCam = "";
+let currentScenerySlots = [];
+let drawingSlot = false;
+let drawStartX = 0;
+let drawStartY = 0;
+
+async function loadSceneryView() {
+  await populateSceneryCameras();
+  initSceneryCanvas();
+}
+
+async function populateSceneryCameras() {
+  try {
+    const res = await fetch("/api/live/status");
+    const data = await res.json();
+    const cameras = data.cameras || {};
+    const select = document.getElementById("scenery-camera-select");
+    select.innerHTML = "";
+
+    const camNames = Object.keys(cameras);
+    if (camNames.length === 0) {
+      select.innerHTML = "<option value=''>No active cameras</option>";
+      return;
+    }
+
+    camNames.forEach((name) => {
+      const opt = document.createElement("option");
+      opt.value = name;
+      opt.textContent = `${name} (${cameras[name].slug})`;
+      select.appendChild(opt);
+    });
+
+    if (!currentSceneryCam || !cameras[currentSceneryCam]) {
+      currentSceneryCam = camNames[0];
+    }
+    select.value = currentSceneryCam;
+
+    select.onchange = () => {
+      currentSceneryCam = select.value;
+      updateSceneryView();
+    };
+
+    updateSceneryView();
+  } catch (err) {
+    console.error("Scenery cameras load error:", err);
+  }
+}
+
+async function updateSceneryView() {
+  if (!currentSceneryCam) return;
+  document.getElementById("scenery-cam-title").textContent = `Camera: ${currentSceneryCam}`;
+
+  const slug = currentSceneryCam.replace(/[^A-Za-z0-9_-]+/g, "_");
+  const img = document.getElementById("scenery-snap-img");
+  img.src = `/api/live/${encodeURIComponent(slug)}/snapshot.jpg?t=${Date.now()}`;
+
+  img.onload = () => {
+    drawSceneryOverlay();
+  };
+
+  await fetchScenerySlots();
+}
+
+async function fetchScenerySlots() {
+  if (!currentSceneryCam) return;
+  try {
+    const res = await fetch(`/api/scenery/slots?camera=${encodeURIComponent(currentSceneryCam)}`);
+    const slots = await res.json();
+    currentScenerySlots = slots;
+    renderScenerySlots(slots);
+    drawSceneryOverlay();
+  } catch (err) {
+    console.error("Fetch slots error:", err);
+  }
+}
+
+function renderScenerySlots(slots) {
+  const grid = document.getElementById("scenery-slots-grid");
+  grid.innerHTML = "";
+
+  if (slots.length === 0) {
+    grid.innerHTML = `<div style="grid-column: 1 / -1; color: var(--muted); padding: 20px 0;">No vehicle slots registered for ${escapeHtml(currentSceneryCam)}. Click and drag on the snapshot above to define a persistent slot anchor!</div>`;
+    return;
+  }
+
+  slots.forEach((s) => {
+    const card = document.createElement("div");
+    card.className = "face-card";
+    const boxStr = Array.isArray(s.slot_box) ? s.slot_box.map(v => typeof v === 'number' ? v.toFixed(2) : v).join(", ") : "";
+
+    card.innerHTML = `
+      <div class="face-card-header">
+        <strong style="font-size: 1rem;">${escapeHtml(s.name)}</strong>
+        <span class="badge" style="background: ${s.is_friendly ? 'rgba(16, 185, 129, 0.2); color: #34d399;' : 'rgba(239, 68, 68, 0.2); color: #f87171;'}">
+          ${s.is_friendly ? 'Friendly Anchor' : 'Alert Anchor'}
+        </span>
+      </div>
+      <div style="font-size: 0.8rem; color: var(--muted);">
+        <div>Box [x1, y1, x2, y2]: [${boxStr}]</div>
+        <div>Dominant Color: <strong>${escapeHtml(s.color_name || 'unknown')}</strong></div>
+      </div>
+      <div style="display: flex; gap: 8px; margin-top: auto;">
+        <button class="btn btn-outline btn-sm btn-toggle-friendly">${s.is_friendly ? 'Mark Alert' : 'Mark Friendly'}</button>
+        <button class="btn btn-danger btn-sm btn-delete-slot" style="margin-left: auto;">Delete</button>
+      </div>
+    `;
+
+    card.querySelector(".btn-toggle-friendly").onclick = async () => {
+      try {
+        const res = await fetch(`/api/scenery/slots/${s.id}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ is_friendly: !s.is_friendly }),
+        });
+        if (res.ok) fetchScenerySlots();
+      } catch (err) {
+        alert(`Error updating slot: ${err}`);
+      }
+    };
+
+    card.querySelector(".btn-delete-slot").onclick = async () => {
+      if (!confirm(`Delete vehicle slot "${s.name}"?`)) return;
+      try {
+        const res = await fetch(`/api/scenery/slots/${s.id}`, { method: "DELETE" });
+        if (res.ok) {
+          showToast("Deleted", `Removed slot "${s.name}"`);
+          fetchScenerySlots();
+        }
+      } catch (err) {
+        alert(`Error deleting slot: ${err}`);
+      }
+    };
+
+    grid.appendChild(card);
+  });
+}
+
+function initSceneryCanvas() {
+  const canvas = document.getElementById("scenery-overlay-canvas");
+  const container = document.getElementById("scenery-canvas-container");
+  if (!canvas) return;
+
+  function resizeCanvas() {
+    if (container && container.clientWidth > 0) {
+      canvas.width = container.clientWidth;
+      canvas.height = container.clientHeight;
+      drawSceneryOverlay();
+    }
+  }
+
+  window.addEventListener("resize", resizeCanvas);
+  setTimeout(resizeCanvas, 100);
+
+  let startX = 0;
+  let startY = 0;
+
+  canvas.onmousedown = (e) => {
+    const rect = canvas.getBoundingClientRect();
+    startX = e.clientX - rect.left;
+    startY = e.clientY - rect.top;
+    drawingSlot = true;
+  };
+
+  canvas.onmousemove = (e) => {
+    if (!drawingSlot) return;
+    const rect = canvas.getBoundingClientRect();
+    const curX = e.clientX - rect.left;
+    const curY = e.clientY - rect.top;
+
+    drawSceneryOverlay();
+    const ctx = canvas.getContext("2d");
+    ctx.strokeStyle = "#38bdf8";
+    ctx.lineWidth = 2;
+    ctx.setLineDash([4, 4]);
+    ctx.strokeRect(
+      Math.min(startX, curX),
+      Math.min(startY, curY),
+      Math.abs(curX - startX),
+      Math.abs(curY - startY)
+    );
+    ctx.setLineDash([]);
+  };
+
+  canvas.onmouseup = (e) => {
+    if (!drawingSlot) return;
+    drawingSlot = false;
+    const rect = canvas.getBoundingClientRect();
+    const endX = e.clientX - rect.left;
+    const endY = e.clientY - rect.top;
+
+    const x1 = Math.min(startX, endX) / canvas.width;
+    const y1 = Math.min(startY, endY) / canvas.height;
+    const x2 = Math.max(startX, endX) / canvas.width;
+    const y2 = Math.max(startY, endY) / canvas.height;
+
+    if ((x2 - x1) > 0.02 && (y2 - y1) > 0.02) {
+      document.getElementById("slot-x1").value = x1.toFixed(3);
+      document.getElementById("slot-y1").value = y1.toFixed(3);
+      document.getElementById("slot-x2").value = x2.toFixed(3);
+      document.getElementById("slot-y2").value = y2.toFixed(3);
+    }
+    drawSceneryOverlay();
+  };
+
+  const refreshBtn = document.getElementById("btn-refresh-scenery-snap");
+  if (refreshBtn) refreshBtn.onclick = () => updateSceneryView();
+
+  const saveBtn = document.getElementById("btn-save-slot");
+  if (saveBtn) {
+    saveBtn.onclick = async () => {
+      const name = document.getElementById("slot-name-input").value.trim();
+      const x1 = parseFloat(document.getElementById("slot-x1").value);
+      const y1 = parseFloat(document.getElementById("slot-y1").value);
+      const x2 = parseFloat(document.getElementById("slot-x2").value);
+      const y2 = parseFloat(document.getElementById("slot-y2").value);
+      const isFriendly = document.getElementById("slot-friendly-check").checked;
+
+      if (!name) return alert("Please enter a vehicle name");
+      if (isNaN(x1) || isNaN(y1) || isNaN(x2) || isNaN(y2)) {
+        return alert("Please define valid slot coordinates by clicking and dragging on the snapshot");
+      }
+
+      try {
+        const res = await fetch("/api/scenery/slots", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            camera: currentSceneryCam,
+            name: name,
+            slot_box: [x1, y1, x2, y2],
+            is_friendly: isFriendly,
+          }),
+        });
+        if (res.ok) {
+          showToast("Saved", `Registered slot "${name}"`);
+          document.getElementById("slot-name-input").value = "";
+          fetchScenerySlots();
+        } else {
+          const err = await res.json();
+          alert(`Failed to save slot: ${err.detail || "Error"}`);
+        }
+      } catch (err) {
+        alert(`Error saving slot: ${err}`);
+      }
+    };
+  }
+}
+
+function drawSceneryOverlay() {
+  const canvas = document.getElementById("scenery-overlay-canvas");
+  if (!canvas) return;
+  const ctx = canvas.getContext("2d");
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+  currentScenerySlots.forEach((slot) => {
+    if (!Array.isArray(slot.slot_box) || slot.slot_box.length !== 4) return;
+    const sx1 = slot.slot_box[0] * canvas.width;
+    const sy1 = slot.slot_box[1] * canvas.height;
+    const sw = (slot.slot_box[2] - slot.slot_box[0]) * canvas.width;
+    const sh = (slot.slot_box[3] - slot.slot_box[1]) * canvas.height;
+
+    ctx.strokeStyle = slot.is_friendly ? "#10b981" : "#f59e0b";
+    ctx.lineWidth = 2;
+    ctx.strokeRect(sx1, sy1, sw, sh);
+
+    ctx.fillStyle = "rgba(0, 0, 0, 0.6)";
+    ctx.fillRect(sx1, Math.max(0, sy1 - 20), ctx.measureText(slot.name).width + 12, 18);
+
+    ctx.fillStyle = slot.is_friendly ? "#34d399" : "#fbbf24";
+    ctx.font = "12px sans-serif";
+    ctx.fillText(slot.name, sx1 + 6, Math.max(14, sy1 - 6));
   });
 }
 

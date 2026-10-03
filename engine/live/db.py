@@ -82,6 +82,19 @@ class EventStore:
                 status TEXT NOT NULL,
                 error TEXT
             );
+
+            CREATE TABLE IF NOT EXISTS vehicle_slots(
+                id INTEGER PRIMARY KEY,
+                camera TEXT NOT NULL,
+                name TEXT NOT NULL,
+                slot_box TEXT NOT NULL,
+                color_name TEXT NOT NULL,
+                appearance_sig TEXT NOT NULL,
+                is_friendly INTEGER NOT NULL DEFAULT 1,
+                created_at REAL NOT NULL,
+                updated_at REAL NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_slots_camera ON vehicle_slots(camera);
             """
         )
         self.conn.commit()
@@ -431,3 +444,59 @@ class EventStore:
                 (last_id, channel),
             )
             return [dict(r) for r in cur.fetchall()]
+
+    # --- Vehicle Scenery Slots ---
+
+    def create_vehicle_slot(
+        self,
+        camera: str,
+        name: str,
+        slot_box: str,
+        color_name: str,
+        appearance_sig: str,
+        is_friendly: int = 1,
+    ) -> int:
+        now = time.time()
+        with self.lock:
+            cur = self.conn.execute(
+                """
+                INSERT INTO vehicle_slots (
+                    camera, name, slot_box, color_name, appearance_sig, is_friendly, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (camera, name, slot_box, color_name, appearance_sig, is_friendly, now, now),
+            )
+            self.conn.commit()
+            return cur.lastrowid
+
+    def update_vehicle_slot(self, slot_id: int, **fields: Any) -> None:
+        fields["updated_at"] = time.time()
+        keys = list(fields.keys())
+        set_clause = ", ".join(f"{k} = ?" for k in keys)
+        values = [fields[k] for k in keys] + [slot_id]
+        with self.lock:
+            self.conn.execute(f"UPDATE vehicle_slots SET {set_clause} WHERE id = ?", values)
+            self.conn.commit()
+
+    def delete_vehicle_slot(self, slot_id: int) -> bool:
+        with self.lock:
+            cur = self.conn.execute("DELETE FROM vehicle_slots WHERE id = ?", (slot_id,))
+            self.conn.commit()
+            return cur.rowcount > 0
+
+    def list_vehicle_slots(self, camera: Optional[str] = None) -> List[Dict[str, Any]]:
+        with self.lock:
+            if camera:
+                cur = self.conn.execute(
+                    "SELECT * FROM vehicle_slots WHERE camera = ? ORDER BY id ASC",
+                    (camera,),
+                )
+            else:
+                cur = self.conn.execute("SELECT * FROM vehicle_slots ORDER BY id ASC")
+            return [dict(r) for r in cur.fetchall()]
+
+    def get_vehicle_slot(self, slot_id: int) -> Optional[Dict[str, Any]]:
+        with self.lock:
+            cur = self.conn.execute("SELECT * FROM vehicle_slots WHERE id = ?", (slot_id,))
+            row = cur.fetchone()
+            return dict(row) if row else None

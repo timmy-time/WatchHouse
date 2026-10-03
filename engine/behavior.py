@@ -33,6 +33,9 @@ class TrackState:
     behaviors: Set[str] = field(default_factory=set)
     last_eval: float = 0.0
     notified_kinds: Set[str] = field(default_factory=set)
+    anchored_slot_name: Optional[str] = None
+    slot_center: Optional[Tuple[float, float]] = None
+    is_anchored: bool = False
 
 
 def point_in_polygon(x: float, y: float, poly: List[Tuple[float, float]]) -> bool:
