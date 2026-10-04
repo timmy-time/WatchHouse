@@ -210,7 +210,22 @@
         <select id="archive-filter-camera" class="form-control" aria-label="Camera">
           <option value="">All cameras</option>
         </select>
+        <select id="archive-filter-class" class="form-control" aria-label="Event type">
+          <option value="">All events</option>
+        </select>
+        <input type="date" id="archive-filter-date-from" class="form-control" aria-label="From date" title="From date">
+        <input type="date" id="archive-filter-date-to" class="form-control" aria-label="To date" title="To date">
         <input type="text" id="archive-filter-reason" class="form-control" placeholder="Filter reason…">
+        <select id="archive-filter-sort" class="form-control" aria-label="Sort order">
+          <option value="date_desc">Newest first</option>
+          <option value="date_asc">Oldest first</option>
+          <option value="camera">Camera A→Z</option>
+          <option value="camera_desc">Camera Z→A</option>
+          <option value="class">Event type A→Z</option>
+          <option value="class_desc">Event type Z→A</option>
+          <option value="confidence_desc">Confidence high→low</option>
+          <option value="duration_desc">Longest first</option>
+        </select>
         <button id="archive-filter-apply" class="btn">Apply</button>
         <button id="archive-filter-reset" class="btn btn-ghost">Reset</button>
       </div>
@@ -231,6 +246,6 @@
 
   <div id="toasts-container" class="toasts-container" aria-live="polite"></div>
 
-  <script src="/static/app.js?v=2"></script>
+  <script src="/static/app.js?v=3"></script>
 </body>
 </html>

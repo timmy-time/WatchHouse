@@ -22,6 +22,15 @@ from pydantic import BaseModel
 
 from engine.scenery import SceneryManager, extract_vehicle_signature
 from engine.faces import FaceEngine
+from engine.web.archive import (
+    build_facets,
+    build_index,
+    describe,
+    filter_indices,
+    parse_class_filter,
+    parse_date_bound,
+    sort_indices,
+)
 from engine.live.config import load_live_config
 from engine.live.db import EventStore
 
@@ -140,9 +149,11 @@ def create_app(output_dir: str, clips_dir: str, config_path: str) -> FastAPI:
     archive_cache_lock = threading.Lock()
     archive_cache_mtime = 0.0
     archive_cache_data: Optional[Dict[str, Any]] = None
+    archive_cache_index: List[Dict[str, Any]] = []
 
-    def get_archive_data() -> Dict[str, Any]:
-        nonlocal archive_cache_mtime, archive_cache_data
+    def get_archive() -> tuple:
+        """Return (analysis results, derived query index), reloading both when the file changes."""
+        nonlocal archive_cache_mtime, archive_cache_data, archive_cache_index
         res_file = os.path.join(output_dir, "analysis_results.json")
         if not os.path.exists(res_file):
             raise HTTPException(status_code=404, detail="no analysis results")
@@ -152,8 +163,12 @@ def create_app(output_dir: str, clips_dir: str, config_path: str) -> FastAPI:
             if archive_cache_data is None or cur_mtime != archive_cache_mtime:
                 with open(res_file, "r", encoding="utf-8") as f:
                     archive_cache_data = json.load(f)
+                archive_cache_index = build_index(archive_cache_data.get("results", []))
                 archive_cache_mtime = cur_mtime
-            return archive_cache_data
+            return archive_cache_data, archive_cache_index
+
+    def get_archive_data() -> Dict[str, Any]:
+        return get_archive()[0]
 
     # Static mounts
     static_dir = os.path.join(os.path.dirname(__file__), "static")
@@ -180,8 +195,9 @@ def create_app(output_dir: str, clips_dir: str, config_path: str) -> FastAPI:
 
     @app.get("/api/archive/summary")
     async def archive_summary():
-        data = get_archive_data()
+        data, index = get_archive()
         summary = {k: v for k, v in data.items() if k != "results"}
+        summary.update(build_facets(data.get("results", []), index))
         return summary
 
     @app.get("/api/archive")
@@ -189,24 +205,36 @@ def create_app(output_dir: str, clips_dir: str, config_path: str) -> FastAPI:
         verdict: Optional[str] = None,
         camera: Optional[str] = None,
         reason: Optional[str] = None,
+        class_name: Optional[str] = None,
+        date_from: Optional[str] = None,
+        date_to: Optional[str] = None,
+        sort: str = "date_desc",
         offset: int = 0,
         limit: int = 50,
     ):
-        data = get_archive_data()
+        data, index = get_archive()
         results = data.get("results", [])
         limit = min(200, max(1, limit))
 
-        filtered = []
-        for idx, r in enumerate(results):
-            if verdict and r.get("verdict") != verdict:
-                continue
-            if camera and r.get("camera") != camera:
-                continue
-            if reason and r.get("primary_reason") != reason and r.get("reason") != reason:
-                continue
+        indices = filter_indices(
+            results,
+            index,
+            verdict=verdict,
+            camera=camera,
+            reason=reason,
+            classes=parse_class_filter(class_name),
+            date_from=parse_date_bound(date_from, is_end=False),
+            date_to=parse_date_bound(date_to, is_end=True),
+        )
+        indices = sort_indices(results, index, indices, sort)
+        total = len(indices)
 
+        items = []
+        for idx in indices[offset : offset + limit]:
+            r = results[idx]
             item = {k: v for k, v in r.items() if k != "detected_tracks"}
             item["idx"] = idx
+            item.update(describe(index, idx))
 
             # Compute URLs
             clip_path = r.get("clip_path")
@@ -229,20 +257,19 @@ def create_app(output_dir: str, clips_dir: str, config_path: str) -> FastAPI:
                     thumb_url = f"/media/output/{os.path.relpath(abs_thumb, output_dir)}"
             item["thumb_url"] = thumb_url
 
-            filtered.append(item)
+            items.append(item)
 
-        total = len(filtered)
-        items = filtered[offset : offset + limit]
         return {"total": total, "items": items}
 
     @app.get("/api/archive/{idx}")
     async def archive_item(idx: int):
-        data = get_archive_data()
+        data, index = get_archive()
         results = data.get("results", [])
         if idx < 0 or idx >= len(results):
             raise HTTPException(status_code=404, detail="Archive item not found")
         item = dict(results[idx])
         item["idx"] = idx
+        item.update(describe(index, idx))
 
         clip_path = item.get("clip_path")
         if clip_path:

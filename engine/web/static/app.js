@@ -1286,25 +1286,77 @@ async function fetchArchiveSummary() {
     if (!res.ok) return;
     const s = await res.json();
     document.getElementById("archive-summary").innerHTML = `
-      <div class="summary-card"><div class="summary-value">${(s.total_analyzed || 0).toLocaleString()}</div><div class="summary-label">Clips scanned</div></div>
-      <div class="summary-card"><div class="summary-value" style="color:var(--ok)">${(s.kept_clips || 0).toLocaleString()}</div><div class="summary-label">Kept events</div></div>
-      <div class="summary-card"><div class="summary-value" style="color:var(--text-dim)">${(s.discarded_clips || 0).toLocaleString()}</div><div class="summary-label">Suppressed</div></div>
+      <div class="summary-card"><div class="summary-value">${(s.total_clips || 0).toLocaleString()}</div><div class="summary-label">Clips scanned</div></div>
+      <div class="summary-card"><div class="summary-value" style="color:var(--ok)">${(s.kept_count || 0).toLocaleString()}</div><div class="summary-label">Kept events</div></div>
+      <div class="summary-card"><div class="summary-value" style="color:var(--text-dim)">${(s.discarded_count || 0).toLocaleString()}</div><div class="summary-label">Suppressed</div></div>
       <div class="summary-card"><div class="summary-value" style="color:var(--accent)">${s.reduction_percentage || 0}%</div><div class="summary-label">Noise reduction</div></div>`;
+
+    fillArchiveSelect("archive-filter-camera", s.cameras, "All cameras");
+    fillArchiveSelect("archive-filter-class", s.classes, "All events");
+    const from = document.getElementById("archive-filter-date-from");
+    const to = document.getElementById("archive-filter-date-to");
+    if (from && s.date_min) { from.min = s.date_min.slice(0, 10); from.max = (s.date_max || "").slice(0, 10) || ""; }
+    if (to && s.date_max) { to.min = (s.date_min || "").slice(0, 10) || ""; to.max = s.date_max.slice(0, 10); }
   } catch (err) {
     console.error("archive summary error:", err);
   }
+}
+
+function fillArchiveSelect(id, counts, allLabel) {
+  const sel = document.getElementById(id);
+  if (!sel) return;
+  const previous = sel.value;
+  sel.innerHTML = `<option value="">${allLabel}</option>`;
+  Object.keys(counts || {}).forEach((name) => {
+    const opt = document.createElement("option");
+    opt.value = name;
+    opt.textContent = `${name} (${Number(counts[name] || 0).toLocaleString()})`;
+    sel.appendChild(opt);
+  });
+  if (previous) sel.value = previous;
+}
+
+function formatArchiveTime(item) {
+  if (item.datetime) return item.datetime.replace("T", " ");
+  const raw = item.timestamp;
+  if (raw && String(raw).length >= 14) {
+    const t = String(raw);
+    return `${t.slice(0, 4)}-${t.slice(4, 6)}-${t.slice(6, 8)} ${t.slice(8, 10)}:${t.slice(10, 12)}:${t.slice(12, 14)}`;
+  }
+  return item.filename || "";
+}
+
+const ARCHIVE_VEHICLE_CLASSES = new Set(["car", "truck", "bus", "motorcycle", "bicycle", "train", "boat", "tractor"]);
+
+function archiveClassChips(item) {
+  const counts = item.class_counts || {};
+  return Object.keys(counts)
+    .map((name) => {
+      const chip = ARCHIVE_VEHICLE_CLASSES.has(name) ? "chip chip-vehicle" : name === "person" ? "chip chip-person" : "chip";
+      const n = Number(counts[name] || 0);
+      return `<span class="${chip}">${escapeHtml(name)}${n > 1 ? ` &times;${n}` : ""}</span>`;
+    })
+    .join("");
 }
 
 async function fetchArchiveList(offset = 0) {
   archiveOffset = offset;
   const verdict = document.getElementById("archive-filter-verdict").value;
   const camera = document.getElementById("archive-filter-camera").value;
+  const className = document.getElementById("archive-filter-class").value;
+  const dateFrom = document.getElementById("archive-filter-date-from").value;
+  const dateTo = document.getElementById("archive-filter-date-to").value;
   const reason = document.getElementById("archive-filter-reason").value;
+  const sort = document.getElementById("archive-filter-sort").value;
 
   const params = new URLSearchParams({ offset: offset.toString(), limit: ARCHIVE_LIMIT.toString() });
   if (verdict) params.set("verdict", verdict);
   if (camera) params.set("camera", camera);
+  if (className) params.set("class_name", className);
+  if (dateFrom) params.set("date_from", dateFrom);
+  if (dateTo) params.set("date_to", dateTo);
   if (reason) params.set("reason", reason);
+  if (sort) params.set("sort", sort);
 
   try {
     const res = await fetch(`/api/archive?${params.toString()}`);
@@ -1340,6 +1392,8 @@ function renderArchiveGrid(items) {
           <span class="card-cam">${escapeHtml(item.camera || "unknown")}</span>
           <span class="${isKeep ? "verdict-keep" : "verdict-discard"}">${escapeHtml(item.verdict || "")}</span>
         </div>
+        <div class="mono archive-card-time">${escapeHtml(formatArchiveTime(item))}</div>
+        <div class="chip-row">${archiveClassChips(item)}</div>
         <div style="font-size:0.86rem;font-weight:600;">${escapeHtml(item.primary_reason || item.reason || "")}</div>
         <div class="card-meta"><span>confidence</span><span class="mono">${Math.round((item.confidence || 0) * 100)}%</span></div>
       </div>`;
@@ -1360,6 +1414,10 @@ function openArchiveModal(item) {
   body.innerHTML = `
     <div class="eyebrow">${escapeHtml(item.camera || "archive")} · ${escapeHtml(item.verdict || "")}</div>
     <h2 style="margin:4px 0 12px;">${escapeHtml(item.primary_reason || item.reason || "clip")}</h2>
+    <div class="modal-meta-row">
+      <span class="mono">${escapeHtml(formatArchiveTime(item))}</span>
+      <span class="chip-row">${archiveClassChips(item)}</span>
+    </div>
     ${videoHtml}`;
   modal.classList.remove("hidden");
 }
@@ -1454,10 +1512,17 @@ document.addEventListener("DOMContentLoaded", () => {
 
   // Archive filters
   document.getElementById("archive-filter-apply").onclick = () => fetchArchiveList(0);
+  ["archive-filter-verdict", "archive-filter-camera", "archive-filter-class", "archive-filter-sort", "archive-filter-date-from", "archive-filter-date-to"].forEach((id) => {
+    document.getElementById(id).onchange = () => fetchArchiveList(0);
+  });
+  document.getElementById("archive-filter-reason").onkeydown = (ev) => {
+    if (ev.key === "Enter") fetchArchiveList(0);
+  };
   document.getElementById("archive-filter-reset").onclick = () => {
-    document.getElementById("archive-filter-verdict").value = "";
-    document.getElementById("archive-filter-camera").value = "";
-    document.getElementById("archive-filter-reason").value = "";
+    ["archive-filter-verdict", "archive-filter-camera", "archive-filter-class", "archive-filter-date-from", "archive-filter-date-to", "archive-filter-reason"].forEach((id) => {
+      document.getElementById(id).value = "";
+    });
+    document.getElementById("archive-filter-sort").value = "date_desc";
     fetchArchiveList(0);
   };
 

@@ -868,6 +868,29 @@ select.form-control {
   flex: 1;
 }
 
+.chip-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  align-items: center;
+}
+
+.archive-card-time {
+  font-size: 0.74rem;
+  color: var(--text-dim);
+  letter-spacing: 0.01em;
+}
+
+.modal-meta-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+  margin-bottom: 12px;
+  font-size: 0.78rem;
+  color: var(--text-dim);
+}
+
 .card-meta {
   display: flex;
   justify-content: space-between;
