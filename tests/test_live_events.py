@@ -225,6 +225,42 @@ class TestLiveEvents(unittest.TestCase):
         self.assertIsNone(self.manager.open_event_id)
         self.assertEqual(len(self.manager.tracks), 0)
 
+    def test_live_only_camera_finalizes_without_clip(self):
+        """record=False cameras close as 'finalized' with no clip and no on_closed."""
+        cam = CameraConfig(
+            name="Camera D", url="rtsp://dvr/back", gpu=0, zones=[],
+            slug="Camera_D", record=False,
+        )
+        closed_calls = []
+        manager = EventManager(
+            cam=cam,
+            cfg=self.cfg,
+            store=self.store,
+            notifier=self.notifier,
+            output_dir=self.test_dir,
+            face_engine=None,
+            gallery=None,
+            on_closed=lambda eid, s, e: closed_calls.append(eid),
+        )
+
+        box = (200.0, 200.0, 300.0, 450.0)
+        for i in range(4):
+            now = i * 0.2
+            det = self._make_det(track_id=7, class_name="person", frame_idx=i, bbox=box, conf=0.7)
+            manager.process(frame=None, dets=[det], now=now, frame_w=1920, frame_h=1080)
+
+        event_id = manager.open_event_id
+        self.assertIsNotNone(event_id)
+
+        # Person gone: after post_roll the event closes
+        for i in range(4, 90):
+            manager.process(frame=None, dets=[], now=i * 0.2, frame_w=1920, frame_h=1080)
+
+        ev = self.store.get_event(event_id)
+        self.assertEqual(ev["status"], "finalized")     # complete, not awaiting a clip
+        self.assertIsNone(ev["clip_path"])              # nothing written
+        self.assertEqual(closed_calls, [])              # no clip assembly requested
+
 
 if __name__ == "__main__":
     unittest.main()

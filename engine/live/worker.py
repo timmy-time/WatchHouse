@@ -117,10 +117,11 @@ class CameraWorker(threading.Thread):
             imgsz=cfg.analysis.imgsz,
             tracker_config=_resolve_tracker_config(cfg),
         )
+        # Live-only cameras (record=False) get no clip assembly thread at all.
         self.finalizer = Finalizer(
             cam, cfg, store, output_dir,
             on_finalized=(verifier.audit_event if verifier is not None else None),
-        )
+        ) if cam.record else None
         self.manager = EventManager(
             cam=cam,
             cfg=cfg,
@@ -129,7 +130,7 @@ class CameraWorker(threading.Thread):
             output_dir=output_dir,
             face_engine=face_engine,
             gallery=gallery,
-            on_closed=self.finalizer.enqueue,
+            on_closed=(self.finalizer.enqueue if self.finalizer is not None else None),
             scenery=scenery,
         )
 
@@ -163,7 +164,8 @@ class CameraWorker(threading.Thread):
     def run(self) -> None:
         logger.info(f"{self.cam.name}: Starting camera worker on GPU {self.cam.gpu}")
         self.stream.start()
-        self.finalizer.start()
+        if self.finalizer is not None:
+            self.finalizer.start()
 
         frame_idx = 0
         fps_count = 0
@@ -268,13 +270,14 @@ class CameraWorker(threading.Thread):
                     self.stream.stop()
                     self.stream = CameraStream(self.cam, self.cfg.recording, fps=self.cfg.analysis.fps)
                     self.stream.start()
-                    self.detector = ClipDetector(model_path=self.cfg.analysis.model, device=self.cam.gpu)
+                    self.detector = ClipDetector(model_path=self.cfg.analysis.model, device="")
                 except Exception as rebuild_exc:
                     logger.error(f"{self.cam.name}: Rebuild failed: {rebuild_exc}")
 
         logger.info(f"{self.cam.name}: Worker shutting down")
         self.stream.stop()
-        self.finalizer.stop()
+        if self.finalizer is not None:
+            self.finalizer.stop()
 
     def stop(self) -> None:
         self.stop_event.set()
@@ -408,6 +411,7 @@ def run_live(config_path: str, output_dir: str) -> int:
                         "slug": w.cam.slug,
                         **w.stream.status(),
                         "gpu": w.cam.gpu,
+                        "record": w.cam.record,
                         "mode": w.fps_controller.current_mode,
                         "target_fps": (
                             w.fps_controller.cfg.boost_fps

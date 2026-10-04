@@ -71,6 +71,26 @@ class TestStreamCommand(unittest.TestCase):
         cmd_hw = self._stream(_cam()).build_cmd(hwaccel=True)
         self.assertIn("-hwaccel", cmd_hw)
 
+    def test_live_only_camera_writes_nothing(self):
+        cmd = self._stream(_cam(record=False)).build_cmd(hwaccel=True)
+        # No segment muxer, no file output, single input, raw pipe only
+        self.assertNotIn("segment", cmd)
+        self.assertNotIn("-strftime", cmd)
+        self.assertFalse(any(".mp4" in arg for arg in cmd))
+        self.assertEqual(cmd.count("-i"), 1)
+        self.assertEqual(cmd[-3:], ["-f", "rawvideo", "pipe:1"])
+        # No recordings directory should be created for live-only cameras
+        self.assertFalse(os.path.exists(os.path.join(self.tmp, "Camera A")))
+
+    def test_live_only_camera_prefers_substream(self):
+        cmd = self._stream(_cam(record=False, sub_url=SUB)).build_cmd(hwaccel=False)
+        self.assertIn(SUB, cmd)
+        self.assertNotIn(MAIN, cmd)
+
+    def test_recording_camera_still_creates_dir(self):
+        self._stream(_cam()).build_cmd(hwaccel=False)
+        self.assertTrue(os.path.exists(os.path.join(self.tmp, "Camera A")))
+
 
 class TestLiveConfigParsing(unittest.TestCase):
     def setUp(self):
@@ -124,6 +144,22 @@ cameras:
         self.assertEqual(cfg.cameras[0].sub_url, "")
         self.assertEqual(cfg.analysis.realtime_gpu, 0)
         self.assertEqual(cfg.analysis.detailed_gpu, 1)
+
+    def test_record_flag_parsing(self):
+        path = self._write(
+            """
+cameras:
+  - name: Camera A
+    url: "rtsp://dvr/main"
+  - name: Camera D
+    url: "rtsp://dvr/back"
+    record: false
+"""
+        )
+        cfg = load_live_config(path)
+        by_name = {c.name: c for c in cfg.cameras}
+        self.assertTrue(by_name["Camera A"].record)      # default is recording
+        self.assertFalse(by_name["Camera D"].record)    # live-only
 
 
 if __name__ == "__main__":

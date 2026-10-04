@@ -94,6 +94,7 @@ class CameraConfig:
     zones: List[Zone] = field(default_factory=list)
     slug: str = ""
     sub_url: str = ""   # optional DVR substream for the realtime analysis path
+    record: bool = True  # False = live inference only: no ring segments, no event clips
 
 
 @dataclass
@@ -210,6 +211,7 @@ def load_live_config(path: str) -> LiveConfig:
         cameras.append(CameraConfig(
             name=name, url=url, gpu=gpu, zones=zones, slug=slug,
             sub_url=_env_str(c.get("sub_url", "")),
+            record=bool(c.get("record", True)),
         ))
 
     return LiveConfig(

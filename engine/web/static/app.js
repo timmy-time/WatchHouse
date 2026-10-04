@@ -177,6 +177,7 @@ function tileInner(name, cam, isHero) {
     <div class="cam-head">
       <span class="cam-name">${escapeHtml(name)}</span>
       <span class="spacer"></span>
+      <span class="chip js-recinfo" style="display:none" title="No recordings are written for this camera">LIVE-ONLY</span>
       <span class="chip js-event ${cam.open_event_id ? "chip-accent" : ""}" ${cam.open_event_id ? "" : 'style="display:none"'}>rec #${cam.open_event_id || ""}</span>
       <span class="chip js-mode ${modeCls}">${mode}</span>
     </div>
@@ -265,6 +266,9 @@ function renderLiveTiles(cameras) {
     } else {
       evEl.style.display = "none";
     }
+
+    const recEl = tile.querySelector(".js-recinfo");
+    if (recEl) recEl.style.display = cam.record === false ? "" : "none";
 
     const conn = tile.querySelector(".js-conn");
     if (cam.connected) {
@@ -663,7 +667,7 @@ async function openEventModal(eventId) {
 
     const videoHtml = ev.clip_url
       ? `<video controls autoplay muted style="width:100%;max-height:480px;background:#05070a;border-radius:10px;" src="${ev.clip_url}"></video>`
-      : `<div class="empty" style="height:220px;display:grid;place-content:center;">${ev.thumb_url ? `<img src="${ev.thumb_url}" style="max-height:180px;object-fit:contain;border-radius:8px;" alt="Event still">` : ""}<strong style="margin-top:10px;">Clip processing</strong>The video will appear once finalized.</div>`;
+      : `<div class="empty" style="height:220px;display:grid;place-content:center;">${ev.thumb_url ? `<img src="${ev.thumb_url}" style="max-height:180px;object-fit:contain;border-radius:8px;" alt="Event still">` : ""}<strong style="margin-top:10px;">${ev.status === "finalized" ? "Not recorded" : "Clip processing"}</strong>${ev.status === "finalized" ? "This camera is live-inference only — no video is kept." : "The video will appear once finalized."}</div>`;
 
     const behaviors = (ev.behaviors || []).map((b) => `<span class="chip">${escapeHtml(b)}</span>`).join("");
 

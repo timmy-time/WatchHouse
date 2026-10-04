@@ -56,3 +56,12 @@ cameras:
     gpu: 0
     zones:
       - {name: porch, type: entry, polygon: [[0.20, 0.60], [0.60, 0.60], [0.60, 1.0], [0.20, 1.0]]}
+  - name: Camera D
+    url: "${CAM_CAMD_URL}"
+    sub_url: "${CAM_CAMD_SUB_URL}"
+    gpu: 0
+    # Live inference only. The camera d produces 1000-2000 events/day, so no
+    # ring segments and no event clips are written; events still open/close,
+    # notify, and keep a compact 960x540 thumbnail as evidence.
+    record: false
+    zones: []   # optional: add an entry polygon to enable "approaching" alerts

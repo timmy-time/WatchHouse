@@ -102,15 +102,35 @@ class CameraStream:
     def build_cmd(self, hwaccel: bool) -> List[str]:
         """Build the ffmpeg command: record main stream, pipe analysis frames.
 
-        Single process, up to two RTSP inputs:
-          input 0 = analysis source (substream when configured) -> rawvideo pipe
-          input 1 = main stream -> MP4 segments (stream copy, never decoded)
-        With no substream the classic single-input command is used.
+        Modes:
+          record=True  -> up to two RTSP inputs: analysis source (substream when
+                          configured) -> rawvideo pipe, main stream -> MP4 segments.
+          record=False -> live-only: a single input feeds the rawvideo pipe and
+                          nothing is written to disk (no segments, no clips).
         """
         rec_dir = os.path.join(self.rec_cfg.root, self.cam.slug)
+
+        pipe_args = [
+            "-map", "0:v:0",
+            "-vf", f"fps={self.fps}",
+            "-pix_fmt", "bgr24",
+            "-f", "rawvideo",
+            "pipe:1",
+        ]
+
+        cmd = [FFMPEG_BIN, "-hide_banner", "-loglevel", "warning", "-nostdin"]
+
+        # --- Live-only camera: inference pipe, zero disk output ---
+        if not self.cam.record:
+            cmd += ["-rtsp_transport", "tcp", "-stimeout", "10000000"]
+            if hwaccel:
+                cmd += ["-hwaccel", "cuda", "-hwaccel_device", str(self.cam.gpu)]
+            cmd += ["-i", self._analysis_url()]
+            return cmd + pipe_args
+
+        # --- Recording camera ---
         os.makedirs(rec_dir, exist_ok=True)
         segment_pattern = os.path.join(rec_dir, "%Y%m%d-%H%M%S.mp4")
-
         segment_args = [
             "-f", "segment",
             "-segment_time", str(self.rec_cfg.segment_seconds),
@@ -119,15 +139,6 @@ class CameraStream:
             "-strftime", "1",
             segment_pattern,
         ]
-
-        pipe_args = [
-            "-vf", f"fps={self.fps}",
-            "-pix_fmt", "bgr24",
-            "-f", "rawvideo",
-            "pipe:1",
-        ]
-
-        cmd = [FFMPEG_BIN, "-hide_banner", "-loglevel", "warning", "-nostdin"]
 
         if self.cam.sub_url and not self.sub_failed:
             # --- Dual input: analysis on substream, recording on main ---
@@ -141,10 +152,7 @@ class CameraStream:
                 # Output 1: MP4 segments, copied from main (no decode cost)
                 "-map", "1:v:0", "-map", "1:a:0?",
                 "-c:v", "copy", "-c:a", "aac", "-b:a", "32k",
-            ] + segment_args + [
-                # Output 2: raw analysis frames from the substream
-                "-map", "0:v:0",
-            ] + pipe_args
+            ] + segment_args + pipe_args
             return cmd
 
         # --- Single input: same stream for recording and analysis ---
@@ -155,9 +163,7 @@ class CameraStream:
             "-i", self.cam.url,
             "-map", "0:v:0", "-map", "0:a:0?",
             "-c:v", "copy", "-c:a", "aac", "-b:a", "32k",
-        ] + segment_args + [
-            "-map", "0:v:0",
-        ] + pipe_args
+        ] + segment_args + pipe_args
         return cmd
 
     def start(self) -> None:

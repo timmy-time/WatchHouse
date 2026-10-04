@@ -412,8 +412,14 @@ class EventManager:
                 os.makedirs(os.path.dirname(full_thumb), exist_ok=True)
                 slots = self.scenery.get_slots(self.cam.name) if self.scenery else None
                 ann = _draw_annotation(frame, relevant_dets, self.cam.zones, frame_w, frame_h, slots=slots, track_states=self.tracks)
-                resized_thumb = cv2.resize(ann, (1280, 720))
-                cv2.imwrite(full_thumb, resized_thumb, [int(cv2.IMWRITE_JPEG_QUALITY), 85])
+                # Live-only cameras can emit thousands of events/day: write compact
+                # thumbnails so evidence stays cheap (960x540 vs 1280x720).
+                if getattr(self.cam, "record", True):
+                    thumb_size, thumb_q = (1280, 720), 85
+                else:
+                    thumb_size, thumb_q = (960, 540), 78
+                resized_thumb = cv2.resize(ann, thumb_size)
+                cv2.imwrite(full_thumb, resized_thumb, [int(cv2.IMWRITE_JPEG_QUALITY), thumb_q])
                 self.store.update_event(self.open_event_id, thumb_path=thumb_rel)
 
             # 4. Notifications on open
@@ -692,15 +698,17 @@ class EventManager:
                 ]
                 closed_event_id = self.open_event_id
                 start_ts = self.open_event_started
+                # Live-only cameras produce no clip: the event is complete on close.
+                recording = getattr(self.cam, "record", True)
                 self.store.update_event(
                     closed_event_id,
                     ended_at=ended_at,
-                    status="closed",
+                    status="closed" if recording else "finalized",
                     behaviors=json.dumps(sorted(self.open_event_behaviors)),
                     track_summaries=json.dumps(summaries),
                 )
 
-                if self.on_closed:
+                if recording and self.on_closed:
                     try:
                         self.on_closed(closed_event_id, start_ts, ended_at)
                     except Exception as exc:
