@@ -1,9 +1,0 @@
-# Flicker-tolerant ByteTrack: for partially occluded (foliage) objects whose
-# boxes jitter. More permissive association, longer memory, fewer new IDs.
-tracker_type: bytetrack
-track_high_thresh: 0.15
-track_low_thresh: 0.05
-new_track_thresh: 0.25
-track_buffer: 90
-match_thresh: 0.95
-fuse_score: True

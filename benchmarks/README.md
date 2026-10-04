@@ -26,7 +26,7 @@ docker compose run --rm --entrypoint bash live -c '
 
 ```bash
 docker compose run --rm \
-  -v "$PWD/tools:/app/tools:ro" -v "$PWD/models:/models:ro" \
+  -v "$PWD/tools:/app/tools:ro" -v "$PWD/models:/models:ro" -v "$PWD/config:/bench-config:ro" \
   -e CUDA_VISIBLE_DEVICES=1 --entrypoint python3 analysis-engine \
   tools/benchmark.py --clip /data/output/bench/foliage.mp4 \
                      --gt /data/output/bench/gt_foliage.json \
@@ -34,7 +34,8 @@ docker compose run --rm \
                      --out /data/output/bench/results.json
 ```
 Run it on the *detailed* GPU (CUDA_VISIBLE_DEVICES=1) so live realtime inference is
-not disturbed. `--tracker /models/bytetrack_flicker.yaml` swaps the tracker profile;
+not disturbed. `--tracker /bench-config/bytetrack_mild.yaml` swaps the tracker profile (the canonical
+profiles live in `config/`, mounted here as `/bench-config`);
 `--only <substring>` filters variants.
 
 ### Tracker comparison (yolov8n@640 conf .20, 120 s clip)
