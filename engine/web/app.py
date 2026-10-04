@@ -275,6 +275,26 @@ def create_app(output_dir: str, clips_dir: str, config_path: str) -> FastAPI:
         if not os.path.exists(path):
             raise HTTPException(status_code=404, detail="Snapshot not available")
         return FileResponse(path, media_type="image/jpeg")
+    @app.get("/api/live/{slug}/detections")
+    async def live_camera_detections(slug: str):
+        status_file = os.path.join(output_dir, "live/status.json")
+        if os.path.exists(status_file):
+            try:
+                with open(status_file, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                for cam_name, cam_info in data.get("cameras", {}).items():
+                    if cam_info.get("slug") == slug:
+                        return {
+                            "camera": cam_name,
+                            "slug": slug,
+                            "detections": cam_info.get("detections", []),
+                            "open_event_id": cam_info.get("open_event_id"),
+                            "mode": cam_info.get("mode", "idle"),
+                        }
+            except Exception:
+                pass
+        return {"camera": slug, "detections": []}
+
 
     @app.get("/api/live/{slug}/stream.mjpg")
     async def live_stream_mjpg(slug: str):

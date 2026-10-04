@@ -62,9 +62,10 @@ def _parse_track_boxes(r, frame_idx: int) -> List[TrackDetection]:
 class ClipDetector:
     """Wrapper around YOLOv8 model for batched inference and video tracking."""
 
-    def __init__(self, model_path: str = "yolov8n.pt", device: int = 0):
+    def __init__(self, model_path: str = "yolov8n.pt", device: int = 0, imgsz: int = 640):
         self.device = device
         self.model_path = model_path
+        self.imgsz = imgsz
         # Ultralytics model load with target CUDA device
         if YOLO is None:
             raise RuntimeError("ultralytics is required for ClipDetector")
@@ -80,6 +81,7 @@ class ClipDetector:
             device=self.device,
             conf=conf_threshold,
             verbose=False,
+            imgsz=self.imgsz,
         )
         detections: List[Detection] = []
         if not results:
@@ -113,6 +115,7 @@ class ClipDetector:
             tracker="bytetrack.yaml",
             device=self.device,
             verbose=False,
+            imgsz=self.imgsz,
         )
         if not results:
             return []
@@ -139,6 +142,7 @@ class ClipDetector:
             tracker="bytetrack.yaml",
             stream=True,
             verbose=False,
+            imgsz=self.imgsz,
         )
 
         frames_result: List[FrameDetections] = []

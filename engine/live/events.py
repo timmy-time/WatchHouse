@@ -64,6 +64,43 @@ def _is_in_ignore_zone(
 
 
 
+def _draw_pill_label(
+    canvas: np.ndarray,
+    text: str,
+    x: int,
+    y: int,
+    border_color: Tuple[int, int, int],
+    text_color: Tuple[int, int, int] = (255, 255, 255),
+    font_scale: float = 0.55,
+    thickness: int = 1,
+) -> None:
+    """Draw high-contrast label with dark background pill and anti-aliased white text."""
+    font = cv2.FONT_HERSHEY_SIMPLEX
+    (tw, th), baseline = cv2.getTextSize(text, font, font_scale, thickness)
+    pad = 4
+
+    x1 = max(0, x)
+    y1 = max(0, y - th - pad * 2)
+    x2 = min(canvas.shape[1], x1 + tw + pad * 2)
+    y2 = min(canvas.shape[0], y1 + th + pad * 2)
+
+    # Dark charcoal background with category border
+    cv2.rectangle(canvas, (x1, y1), (x2, y2), (20, 20, 20), -1)
+    cv2.rectangle(canvas, (x1, y1), (x2, y2), border_color, 1)
+
+    # Anti-aliased text
+    cv2.putText(
+        canvas,
+        text,
+        (x1 + pad, y1 + th + pad - 1),
+        font,
+        font_scale,
+        text_color,
+        thickness,
+        cv2.LINE_AA,
+    )
+
+
 def _draw_annotation(
     frame: np.ndarray,
     dets: List[TrackDetection],
@@ -73,7 +110,7 @@ def _draw_annotation(
     slots: Optional[List[VehicleSlot]] = None,
     track_states: Optional[Dict[int, TrackState]] = None,
 ) -> np.ndarray:
-    """Draw bounding boxes, vehicle slots, and zone polygons onto a copy of the frame."""
+    """Draw high-legibility bounding boxes, vehicle slots, and zones onto a copy of the frame."""
     canvas = frame.copy()
 
     # Draw registered vehicle slots in cyan
@@ -83,15 +120,16 @@ def _draw_annotation(
             sy1 = int(slot.box[1] * frame_h)
             sx2 = int(slot.box[2] * frame_w)
             sy2 = int(slot.box[3] * frame_h)
-            cv2.rectangle(canvas, (sx1, sy1), (sx2, sy2), (255, 255, 0), 1)
-            cv2.putText(
+            slot_color = (255, 255, 0) if slot.is_friendly else (0, 165, 255)
+            cv2.rectangle(canvas, (sx1, sy1), (sx2, sy2), slot_color, 2)
+            _draw_pill_label(
                 canvas,
                 f"Slot: {slot.name}",
-                (sx1, max(15, sy1 - 4)),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.4,
-                (255, 255, 0),
-                1,
+                sx1,
+                sy1,
+                border_color=slot_color,
+                text_color=(255, 255, 255),
+                font_scale=0.50,
             )
 
     # Draw zones (yellow for entry, gray for ignore)
@@ -104,23 +142,22 @@ def _draw_annotation(
             color = (80, 80, 80) if zone.type == "ignore" else (0, 255, 255)
             cv2.polylines(canvas, [pts], isClosed=True, color=color, thickness=2)
             label = f"Ignore: {zone.name}" if zone.type == "ignore" else zone.name
-            cv2.putText(
+            _draw_pill_label(
                 canvas,
                 label,
-                (pts[0][0], max(20, pts[0][1] - 10)),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.5,
-                color,
-                1,
+                pts[0][0],
+                pts[0][1],
+                border_color=color,
+                text_color=(255, 255, 255),
+                font_scale=0.50,
             )
 
-    # Draw detections
+    # Draw detections with crisp high-contrast pill labels
     for d in dets:
         x1, y1, x2, y2 = map(int, d.bbox_xyxy)
         state = track_states.get(d.track_id) if track_states else None
 
         if state and state.anchored_slot_name:
-            # Anchored known vehicle (cyan/gold)
             color = (255, 200, 0) if state.is_anchored else (0, 0, 255)
             label = f"{state.anchored_slot_name} #{d.track_id} {d.confidence:.2f}"
         elif d.class_name in HIGH_VALUE_CLASSES:
@@ -134,7 +171,16 @@ def _draw_annotation(
             label = f"{d.class_name} #{d.track_id} {d.confidence:.2f}"
 
         cv2.rectangle(canvas, (x1, y1), (x2, y2), color, 2)
-        cv2.putText(canvas, label, (x1, max(15, y1 - 8)), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1)
+        _draw_pill_label(
+            canvas,
+            label,
+            x1,
+            y1,
+            border_color=color,
+            text_color=(255, 255, 255),
+            font_scale=0.55,
+            thickness=1,
+        )
 
     return canvas
 

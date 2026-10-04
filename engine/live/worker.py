@@ -20,6 +20,7 @@ from engine.live.notify import Notifier
 from engine.live.stream import CameraStream
 from engine.scenery import SceneryManager
 import cv2
+from engine.live.auditor import EventAuditor
 from engine.live.dynamic_fps import DynamicFpsController
 from engine.live.scheduler import GpuScheduler
 
@@ -39,6 +40,7 @@ class CameraWorker(threading.Thread):
         face_engine: Optional[FaceEngine],
         gallery: FaceGallery,
         scenery: Optional[SceneryManager] = None,
+        auditor: Optional[EventAuditor] = None,
     ):
         super().__init__(name=f"Worker-{cam.slug}", daemon=True)
         self.cam = cam
@@ -49,15 +51,24 @@ class CameraWorker(threading.Thread):
         self.face_engine = face_engine
         self.gallery = gallery
         self.scenery = scenery
+        self.auditor = auditor
 
         self.stop_event = threading.Event()
         self.fps_analyzed = 0.0
         self.last_frame_at = 0.0
         self.fps_controller = DynamicFpsController(cfg.analysis.dynamic_fps)
+        self.current_detections: List[Dict[str, Any]] = []
 
         self.stream = CameraStream(cam, cfg.recording, fps=cfg.analysis.fps)
-        self.detector = ClipDetector(model_path=cfg.analysis.model, device=cam.gpu)
-        self.finalizer = Finalizer(cam, cfg, store, output_dir)
+        self.detector = ClipDetector(
+            model_path=cfg.analysis.model,
+            device=cam.gpu,
+            imgsz=cfg.analysis.imgsz,
+        )
+        self.finalizer = Finalizer(
+            cam, cfg, store, output_dir,
+            on_finalized=(auditor.audit_event if auditor is not None else None),
+        )
         self.manager = EventManager(
             cam=cam,
             cfg=cfg,
@@ -107,6 +118,30 @@ class CameraWorker(threading.Thread):
                         conf_threshold=self.cfg.analysis.confidence,
                     )
                     frame_idx += 1
+                    self.current_detections = [
+                        {
+                            "class_name": d.class_name,
+                            "track_id": d.track_id,
+                            "conf": round(d.confidence, 2),
+                            "box_norm": [
+                                round(d.bbox_xyxy[0] / frame_w, 3),
+                                round(d.bbox_xyxy[1] / frame_h, 3),
+                                round(d.bbox_xyxy[2] / frame_w, 3),
+                                round(d.bbox_xyxy[3] / frame_h, 3),
+                            ],
+                            "anchored_name": (
+                                self.manager.tracks[d.track_id].anchored_slot_name
+                                if d.track_id in self.manager.tracks
+                                else None
+                            ),
+                            "is_anchored": (
+                                self.manager.tracks[d.track_id].is_anchored
+                                if d.track_id in self.manager.tracks
+                                else False
+                            ),
+                        }
+                        for d in dets
+                    ]
 
                     self.manager.process(
                         frame=frame,
@@ -199,6 +234,18 @@ def run_live(config_path: str, output_dir: str) -> int:
     scenery = SceneryManager(store)
     gpu_scheduler = GpuScheduler()
 
+    # Secondary high-resolution auditor on the second GPU (falls back to GPU 0)
+    auditor_device = 1 if gpu_scheduler.has_cuda and len(gpu_scheduler.devices) > 1 else 0
+    auditor = EventAuditor(
+        store=store,
+        output_dir=output_dir,
+        model_name=cfg.analysis.model,
+        device=auditor_device,
+        conf_threshold=0.25,
+    )
+    auditor.start()
+    logger.info(f"EventAuditor started on device {auditor_device}")
+
     model_dir = os.environ.get("FACE_MODEL_DIR", "/opt/models")
     workers: List[CameraWorker] = []
 
@@ -227,6 +274,7 @@ def run_live(config_path: str, output_dir: str) -> int:
             face_engine=face_engine,
             gallery=gallery,
             scenery=scenery,
+            auditor=auditor,
         )
         workers.append(worker)
         worker.start()
@@ -262,6 +310,7 @@ def run_live(config_path: str, output_dir: str) -> int:
                         "fps_analyzed": w.fps_analyzed,
                         "open_event_id": w.manager.open_event_id,
                         "last_frame_at": w.last_frame_at,
+                        "detections": list(w.current_detections),
                     }
                     for w in workers
                 },
@@ -281,6 +330,7 @@ def run_live(config_path: str, output_dir: str) -> int:
             w.stop()
         for w in workers:
             w.join(timeout=5.0)
+        auditor.stop()
         notifier.stop()
         logger.info("Live analytics stopped cleanly")
 

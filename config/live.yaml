@@ -6,9 +6,16 @@ analysis:
   fps: 5
   model: yolov8n.pt
   confidence: 0.30
+  imgsz: 640
   pre_roll_seconds: 5
   post_roll_seconds: 10
   max_event_seconds: 300
+  dynamic_fps:
+    enabled: true
+    idle_fps: 2.0
+    boost_fps: 5.0
+    motion_threshold: 0.015
+    boost_cooldown: 12.0
 faces:
   enabled: true
   min_face_px: 40

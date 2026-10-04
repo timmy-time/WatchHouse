@@ -3,6 +3,7 @@
 let currentRoute = "";
 let sseSource = null;
 let statusInterval = null;
+let showClientOverlays = true;
 
 // Routing
 function initRouter() {
@@ -141,9 +142,9 @@ function renderLiveStreams(cameras) {
             <span class="badge badge-conn">...</span>
             <span class="badge badge-decode">${escapeHtml(cam.decode || "decode")}</span>
           </div>
-        </div>
-        <div class="camera-media">
+        <div class="camera-media" style="position: relative;">
           <img src="/api/live/${encodeURIComponent(cam.slug)}/stream.mjpg" alt="${escapeHtml(name)}" onerror="this.src='/api/live/${encodeURIComponent(cam.slug)}/snapshot.jpg'">
+          <canvas class="camera-live-overlay" style="position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none;"></canvas>
         </div>
         <div class="camera-footer">
           <span class="cam-fps">FPS: ${cam.fps_analyzed || 0}</span>
@@ -168,8 +169,66 @@ function renderLiveStreams(cameras) {
 
     tile.querySelector(".cam-fps").textContent = `FPS: ${cam.fps_analyzed || 0}`;
     tile.querySelector(".cam-restarts").textContent = `Restarts: ${cam.restarts || 0}`;
+
+    // Draw client-side overlays if available
+    drawLiveCameraDetections(tile, cam.detections || []);
   });
 }
+function drawLiveCameraDetections(tile, detections) {
+  const canvas = tile.querySelector(".camera-live-overlay");
+  if (!canvas) return;
+  const container = tile.querySelector(".camera-media");
+  if (!container) return;
+
+  if (canvas.width !== container.clientWidth || canvas.height !== container.clientHeight) {
+    canvas.width = container.clientWidth;
+    canvas.height = container.clientHeight;
+  }
+
+  const ctx = canvas.getContext("2d");
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  if (!showClientOverlays) return;
+
+  detections.forEach((d) => {
+    if (!Array.isArray(d.box_norm) || d.box_norm.length !== 4) return;
+    const x1 = d.box_norm[0] * canvas.width;
+    const y1 = d.box_norm[1] * canvas.height;
+    const w = (d.box_norm[2] - d.box_norm[0]) * canvas.width;
+    const h = (d.box_norm[3] - d.box_norm[1]) * canvas.height;
+
+    let color = "#38bdf8"; // blue vehicle
+    if (d.is_anchored) {
+      color = "#eab308"; // gold anchored
+    } else if (d.class_name === "person") {
+      color = "#10b981"; // green person
+    } else if (d.class_name === "car" || d.class_name === "truck" || d.class_name === "bus") {
+      color = "#ef4444"; // red vehicle
+    }
+
+    // Bounding box
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 2;
+    ctx.strokeRect(x1, y1, w, h);
+
+    // High-contrast pill label
+    const text = d.anchored_name ? `${d.anchored_name} #${d.track_id} ${d.conf}` : `${d.class_name} #${d.track_id} ${d.conf}`;
+    ctx.font = "bold 12px sans-serif";
+    const textWidth = ctx.measureText(text).width;
+    const pad = 4;
+
+    const pillX = Math.max(0, x1);
+    const pillY = Math.max(0, y1 - 20);
+    ctx.fillStyle = "rgba(18, 18, 18, 0.85)";
+    ctx.fillRect(pillX, pillY, textWidth + pad * 2, 18);
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 1;
+    ctx.strokeRect(pillX, pillY, textWidth + pad * 2, 18);
+
+    ctx.fillStyle = "#ffffff";
+    ctx.fillText(text, pillX + pad, pillY + 13);
+  });
+}
+
 
 function addLiveFeedItem(ev) {
   const feed = document.getElementById("live-feed-list");
@@ -1044,6 +1103,22 @@ document.addEventListener("DOMContentLoaded", () => {
       }
     }
   };
+  // Toggle Client Overlays button
+  const toggleBoxesBtn = document.getElementById("btn-toggle-client-boxes");
+  if (toggleBoxesBtn) {
+    toggleBoxesBtn.onclick = () => {
+      showClientOverlays = !showClientOverlays;
+      toggleBoxesBtn.textContent = `Toggle Overlays (${showClientOverlays ? "ON" : "OFF"})`;
+      document.querySelectorAll(".camera-tile").forEach((tile) => {
+        const canvas = tile.querySelector(".camera-live-overlay");
+        if (canvas && !showClientOverlays) {
+          const ctx = canvas.getContext("2d");
+          ctx.clearRect(0, 0, canvas.width, canvas.height);
+        }
+      });
+    };
+  }
+
 
   // Event filters
   document.getElementById("event-filter-apply").onclick = () => fetchEvents(0);

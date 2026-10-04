@@ -9,7 +9,7 @@ import subprocess
 import tempfile
 import threading
 import time
-from typing import List, Optional, Set, Tuple
+from typing import Callable, List, Optional, Set, Tuple
 
 from engine.live.config import CameraConfig, LiveConfig
 from engine.live.db import EventStore
@@ -169,11 +169,13 @@ class Finalizer:
         cfg: LiveConfig,
         store: EventStore,
         output_dir: str,
+        on_finalized: Optional[Callable[[int], None]] = None,
     ):
         self.cam = cam
         self.cfg = cfg
         self.store = store
         self.output_dir = output_dir
+        self.on_finalized = on_finalized
 
         self.queue: queue.Queue = queue.Queue()
         self.pending_items: List[Tuple[int, float, float]] = []
@@ -254,6 +256,11 @@ class Finalizer:
             assemble_clip(selected, clip_full)
             self.store.update_event(event_id, status="finalized", clip_path=clip_rel)
             logger.info(f"{self.cam.name}: Event {event_id} finalized with {len(selected)} segments -> {clip_rel}")
+            if self.on_finalized is not None:
+                try:
+                    self.on_finalized(event_id)
+                except Exception as cb_exc:
+                    logger.warning(f"{self.cam.name}: on_finalized callback error: {cb_exc}")
         except Exception as exc:
             logger.error(f"{self.cam.name}: Assembly failed for event {event_id}: {exc}")
             self.store.update_event(event_id, status="error", error=str(exc))

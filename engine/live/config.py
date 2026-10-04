@@ -42,6 +42,7 @@ class AnalysisConfig:
     pre_roll_seconds: int = 5
     post_roll_seconds: int = 10
     max_event_seconds: int = 300
+    imgsz: int = 640
     dynamic_fps: DynamicFpsConfig = field(default_factory=DynamicFpsConfig)
 
 
@@ -118,6 +119,7 @@ def load_live_config(path: str) -> LiveConfig:
         pre_roll_seconds=int(ana_raw.get("pre_roll_seconds", 5)),
         post_roll_seconds=int(ana_raw.get("post_roll_seconds", 10)),
         max_event_seconds=int(ana_raw.get("max_event_seconds", 300)),
+        imgsz=int(ana_raw.get("imgsz", 640)),
         dynamic_fps=(
             DynamicFpsConfig(enabled=bool(ana_raw.get("dynamic_fps")))
             if isinstance(ana_raw.get("dynamic_fps"), bool)
