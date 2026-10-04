@@ -153,25 +153,11 @@ class CameraWorker(threading.Thread):
 
                     self.last_frame_at = t
                     fps_count += 1
-                else:
-                    # During idle skipped frames, update preview if needed
-                    if frame is not None and (t - self.manager.last_preview_time) >= 0.5:
-                        self.manager.last_preview_time = t
-                        try:
-                            prev_rel = f"live/preview/{self.cam.slug}.jpg"
-                            full_prev = os.path.join(self.output_dir, prev_rel)
-                            os.makedirs(os.path.dirname(full_prev), exist_ok=True)
-                            slots = self.manager.scenery.get_slots(self.cam.name) if self.manager.scenery else None
-                            from engine.live.events import _draw_annotation
-                            ann = _draw_annotation(frame, [], self.cam.zones, frame_w, frame_h, slots=slots, track_states=self.manager.tracks)
-                            resized_prev = cv2.resize(ann, (960, 540))
-                            tmp_prev = full_prev + ".tmp.jpg"
-                            cv2.imwrite(tmp_prev, resized_prev, [int(cv2.IMWRITE_JPEG_QUALITY), 70])
-                            os.replace(tmp_prev, full_prev)
-                        except Exception:
-                            pass
 
-                self.last_frame_at = t
+                # Clean preview on every delivered frame (inference optional):
+                # overlays are drawn client-side, this keeps the stream smooth.
+                self.manager.update_preview(frame, t)
+
                 now = time.time()
                 if now - fps_start >= 5.0:
                     self.fps_analyzed = round(fps_count / (now - fps_start), 1)

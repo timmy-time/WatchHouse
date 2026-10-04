@@ -3,210 +3,222 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>CCTV Live Analytics & Dashboard</title>
-  <link rel="stylesheet" href="/static/style.css">
+  <meta name="description" content="Live CCTV analytics console — camera streams, event detection, face recognition, and vehicle scenery anchors.">
+  <meta name="theme-color" content="#0b0d10">
+  <title>CCTV Console</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%230b0d10'/%3E%3Ccircle cx='16' cy='14' r='6' fill='none' stroke='%235bc8e8' stroke-width='2.4'/%3E%3Ccircle cx='16' cy='14' r='2.2' fill='%235bc8e8'/%3E%3Cpath d='M9 24h14' stroke='%235bc8e8' stroke-width='2.4' stroke-linecap='round'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="/static/style.css?v=2">
 </head>
 <body>
-  <div id="app">
-    <!-- Top Navigation -->
-    <header class="navbar">
-      <div class="nav-brand">
-        <span class="brand-icon">📹</span>
-        <span class="brand-title">CCTV Analytics</span>
+  <div class="grain" aria-hidden="true"></div>
+
+  <!-- Top bar -->
+  <header class="topbar">
+    <a class="brand" href="#/live" aria-label="CCTV Console home">
+      <span class="brand-mark" aria-hidden="true"></span>
+      <span class="brand-word">CCTV<em>/</em><b>CONSOLE</b></span>
+    </a>
+
+    <nav class="nav-links" aria-label="Primary">
+      <a href="#/live" class="nav-link" id="nav-live">Live</a>
+      <a href="#/events" class="nav-link" id="nav-events">Events</a>
+      <a href="#/faces" class="nav-link" id="nav-faces">Faces</a>
+      <a href="#/scenery" class="nav-link" id="nav-scenery">Scenery</a>
+      <a href="#/archive" class="nav-link" id="nav-archive">Archive</a>
+    </nav>
+
+    <div class="topbar-right">
+      <div class="sys-chips" id="sys-chips" aria-live="polite"></div>
+      <time class="clock" id="clock" datetime="">--:--:--</time>
+      <button id="btn-browser-notifications" class="btn btn-ghost btn-sm" title="Enable desktop notifications">Alerts</button>
+    </div>
+  </header>
+
+  <main class="content">
+    <!-- ============ LIVE ============ -->
+    <section id="view-live" class="view hidden">
+      <div class="live-shell">
+        <div class="live-main">
+          <div class="stage" id="stage" aria-label="Primary camera"></div>
+          <div class="filmstrip" id="filmstrip" aria-label="All cameras"></div>
+        </div>
+
+        <aside class="rail" aria-label="Event feed">
+          <div class="rail-head">
+            <span class="live-dot" title="Listening"></span>
+            <h3>Event feed</h3>
+            <button id="btn-toggle-client-boxes" class="btn btn-ghost btn-xs" title="Toggle detection overlays">Boxes ON</button>
+          </div>
+          <div class="feed-list" id="live-feed-list">
+            <div class="empty"><strong>All quiet</strong>New events will appear here in real time.</div>
+          </div>
+        </aside>
       </div>
-      <nav class="nav-links">
-        <a href="#/live" class="nav-link" id="nav-live">Live Streams</a>
-        <a href="#/events" class="nav-link" id="nav-events">Events</a>
-        <a href="#/faces" class="nav-link" id="nav-faces">Face Gallery</a>
-        <a href="#/scenery" class="nav-link" id="nav-scenery">Scenery & Vehicles</a>
-        <a href="#/archive" class="nav-link" id="nav-archive">Archive</a>
-      <div class="nav-actions">
-        <button id="btn-browser-notifications" class="btn btn-sm btn-outline">Enable browser alerts</button>
+    </section>
+
+    <!-- ============ EVENTS ============ -->
+    <section id="view-events" class="view hidden">
+      <div class="section-head">
+        <div>
+          <div class="eyebrow">Recorded activity</div>
+          <h2>Events</h2>
+        </div>
       </div>
-    </header>
 
-    <!-- Main Container -->
-    <main class="content-container">
-      <!-- Live View -->
-      <section id="view-live" class="view hidden">
-        <div class="live-layout">
-        <div style="grid-column: 1 / -1; display: flex; justify-content: flex-end; margin-bottom: 8px;">
-          <button id="btn-toggle-client-boxes" class="btn btn-sm btn-outline">Toggle Overlays (ON)</button>
+      <div class="filter-bar">
+        <select id="event-filter-camera" class="form-control" aria-label="Camera">
+          <option value="">All cameras</option>
+        </select>
+        <select id="event-filter-behavior" class="form-control" aria-label="Behavior">
+          <option value="">All behaviors</option>
+          <option value="approaching">approaching</option>
+          <option value="loitering">loitering</option>
+          <option value="running">running</option>
+          <option value="passing_by">passing_by</option>
+          <option value="vehicle_arrived">vehicle_arrived</option>
+          <option value="vehicle_departed">vehicle_departed</option>
+          <option value="vehicle_passing">vehicle_passing</option>
+          <option value="animal_present">animal_present</option>
+        </select>
+        <select id="event-filter-identity" class="form-control" aria-label="Identity">
+          <option value="">All identities</option>
+        </select>
+        <input type="date" id="event-filter-date" class="form-control" aria-label="Date">
+        <button id="event-filter-apply" class="btn">Apply</button>
+        <button id="event-filter-reset" class="btn btn-ghost">Reset</button>
+      </div>
+
+      <div class="events-grid" id="events-grid"></div>
+      <div class="pagination-bar" id="events-pagination"></div>
+    </section>
+
+    <!-- ============ FACES ============ -->
+    <section id="view-faces" class="view hidden">
+      <div class="section-head">
+        <div>
+          <div class="eyebrow">Recognition</div>
+          <h2>Known identities</h2>
         </div>
-          <div class="live-streams" id="live-streams-grid">
-            <!-- Camera stream tiles rendered here -->
+        <button id="btn-new-identity" class="btn btn-primary btn-sm">New identity</button>
+      </div>
+      <div class="identities-grid" id="identities-grid"></div>
+
+      <div class="section-head" style="margin-top: 26px;">
+        <div>
+          <div class="eyebrow">Unresolved</div>
+          <h2>Unknown clusters</h2>
+        </div>
+      </div>
+      <div class="clusters-grid" id="clusters-grid"></div>
+      <datalist id="identities-datalist"></datalist>
+    </section>
+
+    <!-- ============ SCENERY ============ -->
+    <section id="view-scenery" class="view hidden">
+      <div class="section-head">
+        <div>
+          <div class="eyebrow">Persistent objects</div>
+          <h2>Scenery &amp; vehicle anchors</h2>
+        </div>
+        <select id="scenery-camera-select" class="form-control" aria-label="Camera"></select>
+      </div>
+
+      <div class="scenery-shell">
+        <div class="cam-tile is-hero">
+          <div class="cam-head">
+            <span id="scenery-cam-title" class="cam-name">Camera</span>
+            <span class="spacer"></span>
+            <button id="btn-refresh-scenery-snap" class="btn btn-ghost btn-xs">Refresh snapshot</button>
           </div>
-          <aside class="live-feed">
-            <h3 class="feed-title">Real-Time Event Feed</h3>
-            <div class="feed-list" id="live-feed-list">
-              <!-- Live events appended via SSE -->
-            </div>
-          </aside>
-        </div>
-      </section>
-
-      <!-- Events View -->
-      <section id="view-events" class="view hidden">
-        <div class="filter-bar">
-          <select id="event-filter-camera" class="form-control">
-            <option value="">All Cameras</option>
-          </select>
-          <select id="event-filter-behavior" class="form-control">
-            <option value="">All Behaviors</option>
-            <option value="approaching">approaching</option>
-            <option value="loitering">loitering</option>
-            <option value="running">running</option>
-            <option value="passing_by">passing_by</option>
-            <option value="vehicle_arrived">vehicle_arrived</option>
-            <option value="vehicle_departed">vehicle_departed</option>
-            <option value="vehicle_passing">vehicle_passing</option>
-            <option value="animal_present">animal_present</option>
-          </select>
-          <select id="event-filter-identity" class="form-control">
-            <option value="">All Identities</option>
-          </select>
-          <input type="date" id="event-filter-date" class="form-control">
-          <button id="event-filter-apply" class="btn btn-primary">Apply</button>
-          <button id="event-filter-reset" class="btn btn-outline">Reset</button>
-        </div>
-        <div class="events-grid" id="events-grid">
-          <!-- Event cards -->
-        </div>
-        <div class="pagination-bar" id="events-pagination"></div>
-      </section>
-
-      <!-- Faces View -->
-      <section id="view-faces" class="view hidden">
-        <div class="faces-section">
-          <div class="section-header">
-            <h2>Known Identities</h2>
-            <button id="btn-new-identity" class="btn btn-primary btn-sm">+ New Identity</button>
+          <div class="snap-frame">
+            <img id="scenery-snap-img" alt="Camera snapshot">
+            <canvas id="scenery-overlay-canvas"></canvas>
           </div>
-          <div class="identities-grid" id="identities-grid">
-            <!-- Identities cards -->
-          </div>
+          <div class="cam-foot">Drag on the frame to draw a slot box. Cars parked there are suppressed as friendly scenery.</div>
         </div>
 
-        <div class="faces-section">
-          <div class="section-header">
-            <h2>Unknown Face Clusters</h2>
-          </div>
-          <div class="clusters-grid" id="clusters-grid">
-            <!-- Unknown clusters -->
-          </div>
-        </div>
-        <datalist id="identities-datalist"></datalist>
-      </section>
-
-      <!-- Archive View -->
-      <section id="view-archive" class="view hidden">
-        <div class="archive-summary" id="archive-summary">
-          <!-- Summary chips -->
-        </div>
-        <div class="filter-bar">
-          <select id="archive-filter-verdict" class="form-control">
-            <option value="">All Verdicts</option>
-            <option value="KEEP">KEEP</option>
-            <option value="DISCARD">DISCARD</option>
-          </select>
-          <select id="archive-filter-camera" class="form-control">
-            <option value="">All Cameras</option>
-          </select>
-          <input type="text" id="archive-filter-reason" class="form-control" placeholder="Filter reason...">
-          <button id="archive-filter-apply" class="btn btn-primary">Apply</button>
-          <button id="archive-filter-reset" class="btn btn-outline">Reset</button>
-        </div>
-        <div class="archive-grid" id="archive-grid">
-          <!-- Archive clip cards -->
-        </div>
-        <div class="pagination-bar" id="archive-pagination"></div>
-      </section>
-
-      <!-- Scenery & Vehicles View -->
-      <section id="view-scenery" class="view hidden">
-        <div class="section-header">
-          <h2>Persistent Scenery & Vehicle Anchors</h2>
-          <div style="display: flex; gap: 10px; align-items: center;">
-            <select id="scenery-camera-select" class="form-control">
-              <!-- Cameras -->
-            </select>
-          </div>
-        </div>
-
-        <div style="display: grid; grid-template-columns: 1fr 380px; gap: 20px;">
-          <!-- Camera Snapshot Preview with Visual Slot Overlays -->
-          <div class="camera-tile" style="overflow: visible;">
-            <div class="camera-header">
-              <span id="scenery-cam-title" style="font-weight: 600;">Camera View</span>
-              <button id="btn-refresh-scenery-snap" class="btn btn-outline btn-sm">Refresh Snapshot</button>
-            </div>
-            <div id="scenery-canvas-container" style="position: relative; width: 100%; aspect-ratio: 16/9; background: #000; overflow: hidden; border-radius: 0 0 6px 6px;">
-              <img id="scenery-snap-img" style="width: 100%; height: 100%; object-fit: contain; display: block;" alt="Snapshot">
-              <canvas id="scenery-overlay-canvas" style="position: absolute; inset: 0; width: 100%; height: 100%; cursor: crosshair;"></canvas>
-            </div>
-            <div style="padding: 10px 14px; font-size: 0.8rem; color: var(--muted);">
-              Click & drag on the image above to define a parking slot anchor, or enter coordinates manually below.
-            </div>
-          </div>
-
-          <!-- Add & Configure Slot Form -->
-          <div class="face-card" style="height: fit-content;">
-            <h3 style="font-size: 1rem; margin-bottom: 8px;">Register Vehicle Slot</h3>
-            <div style="display: flex; flex-direction: column; gap: 10px;">
-              <div>
-                <label style="font-size: 0.8rem; color: var(--muted);">Vehicle Name</label>
-                <input type="text" id="slot-name-input" class="form-control" placeholder="e.g. Parked Parked Car 1" style="width: 100%;">
+        <div class="cam-tile" style="overflow: visible;">
+          <div class="cam-head"><span class="cam-name">Register vehicle slot</span></div>
+          <div class="cam-foot" style="display: block; border-top: 0; border-bottom: 1px solid var(--line); padding: 14px;">
+            <div class="form-stack">
+              <div class="field">
+                <label for="slot-name-input">Vehicle name</label>
+                <input type="text" id="slot-name-input" class="form-control" placeholder="e.g. Parked Car 1" style="width: 100%;">
               </div>
-              <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px;">
-                <div>
-                  <label style="font-size: 0.8rem; color: var(--muted);">X1 (0..1)</label>
+              <div class="coord-grid">
+                <div class="field">
+                  <label for="slot-x1">X1</label>
                   <input type="number" step="0.01" id="slot-x1" class="form-control" style="width: 100%;">
                 </div>
-                <div>
-                  <label style="font-size: 0.8rem; color: var(--muted);">Y1 (0..1)</label>
+                <div class="field">
+                  <label for="slot-y1">Y1</label>
                   <input type="number" step="0.01" id="slot-y1" class="form-control" style="width: 100%;">
                 </div>
-                <div>
-                  <label style="font-size: 0.8rem; color: var(--muted);">X2 (0..1)</label>
+                <div class="field">
+                  <label for="slot-x2">X2</label>
                   <input type="number" step="0.01" id="slot-x2" class="form-control" style="width: 100%;">
                 </div>
-                <div>
-                  <label style="font-size: 0.8rem; color: var(--muted);">Y2 (0..1)</label>
+                <div class="field">
+                  <label for="slot-y2">Y2</label>
                   <input type="number" step="0.01" id="slot-y2" class="form-control" style="width: 100%;">
                 </div>
               </div>
-              <div style="display: flex; align-items: center; gap: 8px; margin-top: 4px;">
+              <label class="check-line">
                 <input type="checkbox" id="slot-friendly-check" checked>
-                <label for="slot-friendly-check" style="font-size: 0.85rem;">Friendly (Suppress false alerts/clips)</label>
-              </div>
-              <button id="btn-save-slot" class="btn btn-primary" style="margin-top: 8px;">+ Save Vehicle Slot</button>
+                Friendly — suppress events for this slot
+              </label>
+              <button id="btn-save-slot" class="btn btn-primary">Save vehicle slot</button>
             </div>
           </div>
-        </div>
-
-        <!-- Registered Slots Grid -->
-        <div style="margin-top: 24px;">
-          <h3 style="font-size: 1.1rem; margin-bottom: 12px;">Active Vehicle Slots</h3>
-          <div id="scenery-slots-grid" class="identities-grid">
-            <!-- Slot cards rendered here -->
+          <div class="cam-foot" style="display: block;">
+            <div class="eyebrow" style="margin-bottom: 8px;">Active slots</div>
+            <div id="scenery-slots-grid" class="form-stack"></div>
           </div>
         </div>
-      </section>
-    </main>
-
-    <!-- Global Video / Event Modal -->
-    <div id="modal" class="modal hidden">
-      <div class="modal-backdrop" id="modal-backdrop"></div>
-      <div class="modal-content">
-        <button class="modal-close" id="modal-close">&times;</button>
-        <div class="modal-body" id="modal-body"></div>
       </div>
-    </div>
+    </section>
 
-    <!-- Toast Notifications Container -->
-    <div id="toasts-container" class="toasts-container"></div>
+    <!-- ============ ARCHIVE ============ -->
+    <section id="view-archive" class="view hidden">
+      <div class="section-head">
+        <div>
+          <div class="eyebrow">Historical scan</div>
+          <h2>Archive</h2>
+        </div>
+      </div>
+
+      <div class="archive-summary" id="archive-summary"></div>
+
+      <div class="filter-bar">
+        <select id="archive-filter-verdict" class="form-control" aria-label="Verdict">
+          <option value="">All verdicts</option>
+          <option value="KEEP">KEEP</option>
+          <option value="DISCARD">DISCARD</option>
+        </select>
+        <select id="archive-filter-camera" class="form-control" aria-label="Camera">
+          <option value="">All cameras</option>
+        </select>
+        <input type="text" id="archive-filter-reason" class="form-control" placeholder="Filter reason…">
+        <button id="archive-filter-apply" class="btn">Apply</button>
+        <button id="archive-filter-reset" class="btn btn-ghost">Reset</button>
+      </div>
+
+      <div class="archive-grid" id="archive-grid"></div>
+      <div class="pagination-bar" id="archive-pagination"></div>
+    </section>
+  </main>
+
+  <!-- Event / clip modal -->
+  <div id="modal" class="modal hidden" role="dialog" aria-modal="true">
+    <div class="modal-backdrop" id="modal-backdrop"></div>
+    <div class="modal-content">
+      <button class="modal-close" id="modal-close" aria-label="Close">&times;</button>
+      <div class="modal-body" id="modal-body"></div>
+    </div>
   </div>
 
-  <script src="/static/app.js"></script>
+  <div id="toasts-container" class="toasts-container" aria-live="polite"></div>
+
+  <script src="/static/app.js?v=2"></script>
 </body>
 </html>

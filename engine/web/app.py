@@ -275,6 +275,20 @@ def create_app(output_dir: str, clips_dir: str, config_path: str) -> FastAPI:
         if not os.path.exists(path):
             raise HTTPException(status_code=404, detail="Snapshot not available")
         return FileResponse(path, media_type="image/jpeg")
+
+    # Cached live config for zone geometry (reloads when the YAML changes)
+    live_cfg_cache: Dict[str, Any] = {"mtime": 0.0, "cfg": None}
+
+    def get_live_cfg():
+        try:
+            mtime = os.path.getmtime(config_path)
+            if live_cfg_cache["cfg"] is None or mtime != live_cfg_cache["mtime"]:
+                live_cfg_cache["cfg"] = load_live_config(config_path)
+                live_cfg_cache["mtime"] = mtime
+            return live_cfg_cache["cfg"]
+        except Exception:
+            return None
+
     @app.get("/api/live/{slug}/detections")
     async def live_camera_detections(slug: str):
         status_file = os.path.join(output_dir, "live/status.json")
@@ -284,17 +298,44 @@ def create_app(output_dir: str, clips_dir: str, config_path: str) -> FastAPI:
                     data = json.load(f)
                 for cam_name, cam_info in data.get("cameras", {}).items():
                     if cam_info.get("slug") == slug:
+                        zones = []
+                        cfg = get_live_cfg()
+                        if cfg is not None:
+                            for c in cfg.cameras:
+                                if c.name == cam_name:
+                                    zones = [
+                                        {
+                                            "name": z.name,
+                                            "type": z.type,
+                                            "polygon": [[float(x), float(y)] for (x, y) in z.polygon],
+                                        }
+                                        for z in c.zones
+                                    ]
+                                    break
+
+                        slots = []
+                        for s in store.list_vehicle_slots(camera=cam_name):
+                            try:
+                                slots.append({
+                                    "name": s["name"],
+                                    "slot_box": json.loads(s["slot_box"]),
+                                    "is_friendly": bool(s["is_friendly"]),
+                                })
+                            except Exception:
+                                continue
+
                         return {
                             "camera": cam_name,
                             "slug": slug,
                             "detections": cam_info.get("detections", []),
+                            "zones": zones,
+                            "slots": slots,
                             "open_event_id": cam_info.get("open_event_id"),
                             "mode": cam_info.get("mode", "idle"),
                         }
             except Exception:
                 pass
-        return {"camera": slug, "detections": []}
-
+        return {"camera": slug, "detections": [], "zones": [], "slots": []}
 
     @app.get("/api/live/{slug}/stream.mjpg")
     async def live_stream_mjpg(slug: str):
@@ -314,11 +355,11 @@ def create_app(output_dir: str, clips_dir: str, config_path: str) -> FastAPI:
                                 b"--frame\r\n"
                                 b"Content-Type: image/jpeg\r\n\r\n" + data + b"\r\n"
                             )
-                    await asyncio.sleep(0.25)
+                    await asyncio.sleep(0.12)
                 except asyncio.CancelledError:
                     break
                 except Exception:
-                    await asyncio.sleep(0.5)
+                    await asyncio.sleep(0.4)
 
         return StreamingResponse(
             stream_generator(),

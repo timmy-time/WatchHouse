@@ -706,18 +706,32 @@ class EventManager:
                 self.event_notified_kinds = set()
                 self.event_tracks = {}
 
-        # 9. Live preview generation (<= 2 fps)
-        if frame is not None and (now - self.last_preview_time) >= 0.5:
-            self.last_preview_time = now
-            try:
-                prev_rel = f"live/preview/{self.cam.slug}.jpg"
-                full_prev = os.path.join(self.output_dir, prev_rel)
-                os.makedirs(os.path.dirname(full_prev), exist_ok=True)
-                slots = self.scenery.get_slots(self.cam.name) if self.scenery else None
-                ann = _draw_annotation(frame, relevant_dets, self.cam.zones, frame_w, frame_h, slots=slots, track_states=self.tracks)
-                resized_prev = cv2.resize(ann, (960, 540))
-                tmp_prev = full_prev + ".tmp.jpg"
-                cv2.imwrite(tmp_prev, resized_prev, [int(cv2.IMWRITE_JPEG_QUALITY), 70])
-                os.replace(tmp_prev, full_prev)
-            except Exception as exc:
-                logger.warning(f"{self.cam.name}: Failed to write preview image: {exc}")
+        # 9. (Preview rendering moved to EventManager.update_preview, called by the
+        # camera worker on every delivered frame so the live view stays smooth
+        # even when inference is throttled by dynamic FPS.)
+
+    def update_preview(
+        self,
+        frame: np.ndarray,
+        now: float,
+        min_interval: float = 0.16,
+    ) -> None:
+        """Write a clean, high-resolution preview JPEG (no baked-in overlays).
+
+        Overlays are composited client-side from /api/live/{slug}/detections,
+        which keeps the stream sharp and free of JPEG-baked boxes while letting
+        the browser redraw at display refresh rate.
+        """
+        if frame is None or (now - self.last_preview_time) < min_interval:
+            return
+        self.last_preview_time = now
+        try:
+            prev_rel = f"live/preview/{self.cam.slug}.jpg"
+            full_prev = os.path.join(self.output_dir, prev_rel)
+            os.makedirs(os.path.dirname(full_prev), exist_ok=True)
+            resized = cv2.resize(frame, (1280, 720), interpolation=cv2.INTER_AREA)
+            tmp_prev = full_prev + ".tmp.jpg"
+            cv2.imwrite(tmp_prev, resized, [int(cv2.IMWRITE_JPEG_QUALITY), 72])
+            os.replace(tmp_prev, full_prev)
+        except Exception as exc:
+            logger.warning(f"{self.cam.name}: Failed to write preview image: {exc}")

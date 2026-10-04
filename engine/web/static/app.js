@@ -1,11 +1,23 @@
-// CCTV Analytics Web Dashboard Application
+// ============================================================================
+// CCTV Console — web client
+// Live: hero stage + filmstrip + event rail, client-side canvas overlays.
+// ============================================================================
 
 let currentRoute = "";
 let sseSource = null;
 let statusInterval = null;
+let detectionsInterval = null;
+let clockInterval = null;
 let showClientOverlays = true;
 
+// Live-view state
+let liveCameras = {};
+let liveHeroSlug = null;
+let liveDetections = {}; // slug -> { detections, zones, slots }
+
+// ============================================================================
 // Routing
+// ============================================================================
 function initRouter() {
   window.addEventListener("hashchange", handleRoute);
   if (!window.location.hash) {
@@ -19,23 +31,17 @@ function handleRoute() {
   const hash = window.location.hash || "#/live";
   currentRoute = hash;
 
-  // Clear live status polling when navigating away from live
-  if (statusInterval && !hash.startsWith("#/live")) {
-    clearInterval(statusInterval);
-    statusInterval = null;
+  const inLive = hash.startsWith("#/live");
+  if (!inLive) {
+    if (statusInterval) { clearInterval(statusInterval); statusInterval = null; }
+    if (detectionsInterval) { clearInterval(detectionsInterval); detectionsInterval = null; }
   }
 
-  // Update navigation links
   document.querySelectorAll(".nav-link").forEach((link) => {
     const route = link.getAttribute("href");
-    if (hash.startsWith(route)) {
-      link.classList.add("active");
-    } else {
-      link.classList.remove("active");
-    }
+    link.classList.toggle("active", hash.startsWith(route));
   });
 
-  // Switch view containers
   document.querySelectorAll(".view").forEach((v) => v.classList.add("hidden"));
 
   if (hash === "#/live" || hash === "#/") {
@@ -61,7 +67,9 @@ function handleRoute() {
   }
 }
 
-// Global SSE & Notifications
+// ============================================================================
+// Global SSE, clock, toasts
+// ============================================================================
 function initSSE() {
   if (sseSource) sseSource.close();
   sseSource = new EventSource("/api/stream");
@@ -69,7 +77,7 @@ function initSSE() {
   sseSource.addEventListener("notification", (e) => {
     try {
       const data = JSON.parse(e.data);
-      showToast(data.title || "New Notification", data.body || "");
+      showToast(data.title || "Notification", data.body || "");
       if (Notification.permission === "granted") {
         new Notification(data.title, { body: data.body });
       }
@@ -82,193 +90,387 @@ function initSSE() {
     try {
       const data = JSON.parse(e.data);
       addLiveFeedItem(data);
-      if (currentRoute.startsWith("#/events")) {
-        loadEventsView();
-      }
+      if (currentRoute.startsWith("#/events")) loadEventsView();
     } catch (err) {
       console.error("SSE event parse error:", err);
     }
   });
 
-  sseSource.onerror = (err) => {
-    console.warn("SSE connection interrupted, retrying...", err);
+  sseSource.onerror = () => console.warn("SSE interrupted; browser will retry");
+}
+
+function initClock() {
+  const el = document.getElementById("clock");
+  const tick = () => {
+    const now = new Date();
+    el.textContent = now.toLocaleTimeString([], { hour12: false });
+    el.setAttribute("datetime", now.toISOString());
   };
+  tick();
+  clearInterval(clockInterval);
+  clockInterval = setInterval(tick, 1000);
 }
 
 function showToast(title, body) {
   const container = document.getElementById("toasts-container");
   const toast = document.createElement("div");
   toast.className = "toast";
-  toast.innerHTML = `<strong>${escapeHtml(title)}</strong><div>${escapeHtml(body)}</div>`;
+  toast.innerHTML = `<strong>${escapeHtml(title)}</strong><span>${escapeHtml(body)}</span>`;
   container.appendChild(toast);
-  setTimeout(() => {
-    toast.remove();
-  }, 5000);
+  setTimeout(() => toast.remove(), 5200);
 }
 
-// Live View
+// ============================================================================
+// LIVE VIEW
+// ============================================================================
 async function loadLiveView() {
   await fetchLiveStatus();
-  if (!statusInterval) {
-    statusInterval = setInterval(fetchLiveStatus, 5000);
-  }
+  await pollLiveDetections();
+  await prefillFeed();
+
+  if (!statusInterval) statusInterval = setInterval(fetchLiveStatus, 5000);
+  if (!detectionsInterval) detectionsInterval = setInterval(pollLiveDetections, 1000);
 }
 
+// --- system chips in the top bar ---
 async function fetchLiveStatus() {
   try {
     const res = await fetch("/api/live/status");
     const data = await res.json();
-    renderLiveStreams(data.cameras || {});
+    liveCameras = data.cameras || {};
+    renderSysChips(data.gpus || {}, liveCameras);
+    renderLiveTiles(liveCameras);
   } catch (err) {
-    console.error("Error fetching live status:", err);
+    console.error("live status error:", err);
   }
 }
 
-function renderLiveStreams(cameras) {
-  const grid = document.getElementById("live-streams-grid");
-  const existingTiles = new Set();
+function renderSysChips(gpus, cameras) {
+  const host = document.getElementById("sys-chips");
+  const parts = [];
 
-  Object.entries(cameras).forEach(([name, cam]) => {
-    existingTiles.add(cam.slug);
-    let tile = document.getElementById(`cam-tile-${cam.slug}`);
-    if (!tile) {
-      tile = document.createElement("div");
-      tile.id = `cam-tile-${cam.slug}`;
-      tile.className = "camera-tile";
-      tile.innerHTML = `
-        <div class="camera-header">
-          <span class="camera-name">${escapeHtml(name)}</span>
-          <div class="camera-badges">
-            <span class="badge badge-conn">...</span>
-            <span class="badge badge-decode">${escapeHtml(cam.decode || "decode")}</span>
-          </div>
-        <div class="camera-media" style="position: relative;">
-          <img src="/api/live/${encodeURIComponent(cam.slug)}/stream.mjpg" alt="${escapeHtml(name)}" onerror="this.src='/api/live/${encodeURIComponent(cam.slug)}/snapshot.jpg'">
-          <canvas class="camera-live-overlay" style="position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none;"></canvas>
-        </div>
-        <div class="camera-footer">
-          <span class="cam-fps">FPS: ${cam.fps_analyzed || 0}</span>
-          <span class="cam-restarts">Restarts: ${cam.restarts || 0}</span>
-        </div>
-      `;
-      grid.appendChild(tile);
-    }
+  const gpuKeys = Object.keys(gpus).sort();
+  gpuKeys.forEach((k) => {
+    const g = gpus[k];
+    const util = g.utilization_pct ?? 0;
+    parts.push(`<span class="chip chip-accent" title="${escapeHtml(g.name || "")} — VRAM ${g.memory_used_mb || 0}/${g.memory_total_mb || "?"} MB">GPU${escapeHtml(k)} ${util}%</span>`);
+  });
 
-    // Update status badges
-    const badgeConn = tile.querySelector(".badge-conn");
-    if (cam.connected) {
-      badgeConn.className = "badge badge-conn badge-connected";
-      badgeConn.textContent = "CONNECTED";
+  const camList = Object.values(cameras);
+  const connected = camList.filter((c) => c.connected).length;
+  parts.push(`<span class="chip ${connected === camList.length && camList.length ? "chip-ok" : "chip-warn"}">${connected}/${camList.length} cams</span>`);
+
+  const boosting = camList.filter((c) => c.mode === "boost").length;
+  if (boosting > 0) parts.push(`<span class="chip chip-warn">${boosting} boost</span>`);
+
+  host.innerHTML = parts.join("");
+}
+
+// --- tile construction ---
+function tileInner(name, cam, isHero) {
+  const slug = encodeURIComponent(cam.slug);
+  const mode = (cam.mode || "idle").toUpperCase();
+  const modeCls = cam.mode === "boost" ? "chip-warn" : "";
+  return `
+    <div class="cam-head">
+      <span class="cam-name">${escapeHtml(name)}</span>
+      <span class="spacer"></span>
+      <span class="chip js-event ${cam.open_event_id ? "chip-accent" : ""}" ${cam.open_event_id ? "" : 'style="display:none"'}>rec #${cam.open_event_id || ""}</span>
+      <span class="chip js-mode ${modeCls}">${mode}</span>
+    </div>
+    <div class="cam-media">
+      <img src="/api/live/${slug}/stream.mjpg"
+           alt="${escapeHtml(name)} live stream"
+           onerror="this.onerror=null;this.src='/api/live/${slug}/snapshot.jpg'">
+      <canvas class="camera-live-overlay"></canvas>
+      <div class="cam-hud">
+        <span class="badge js-conn">…</span>
+        <span class="badge badge-decode js-decode">${escapeHtml((cam.decode || "cpu").toUpperCase())}</span>
+        <span class="badge js-fps">0 fps</span>
+      </div>
+      ${isHero ? `<div class="cam-actions">
+        <button class="icon-btn js-full" title="Fullscreen">⛶</button>
+      </div>` : ""}
+    </div>`;
+}
+
+function buildTile(name, cam, isHero) {
+  const tile = document.createElement("article");
+  tile.className = "cam-tile" + (isHero ? " is-hero" : "");
+  tile.dataset.slug = cam.slug;
+  tile.innerHTML = tileInner(name, cam, isHero);
+
+  if (isHero) {
+    tile.querySelector(".js-full").onclick = (e) => {
+      e.stopPropagation();
+      if (document.fullscreenElement) document.exitFullscreen();
+      else tile.requestFullscreen && tile.requestFullscreen();
+    };
+  } else {
+    tile.onclick = () => {
+      liveHeroSlug = cam.slug;
+      renderLiveTiles(liveCameras);
+      drawAllOverlays();
+    };
+  }
+  return tile;
+}
+
+function renderLiveTiles(cameras) {
+  const names = Object.keys(cameras);
+  if (names.length === 0) return;
+
+  if (!liveHeroSlug || !cameras[liveHeroSlug]) liveHeroSlug = names[0];
+
+  const stage = document.getElementById("stage");
+  const strip = document.getElementById("filmstrip");
+
+  // Rebuild tiles only when the camera set or hero selection changes
+  const signature = `${liveHeroSlug}::${names.map((n) => cameras[n].slug).sort().join("|")}`;
+  if (stage.dataset.signature !== signature) {
+    stage.dataset.signature = signature;
+    stage.innerHTML = "";
+    strip.innerHTML = "";
+    names.forEach((n) => {
+      const cam = cameras[n];
+      if (cam.slug === liveHeroSlug) stage.appendChild(buildTile(n, cam, true));
+      else strip.appendChild(buildTile(n, cam, false));
+    });
+  }
+
+  // Live-update chips (without touching canvases)
+  document.querySelectorAll(".cam-tile").forEach((tile) => {
+    const cam = camListByName(cameras)[tile.dataset.slug];
+    if (!cam) return;
+    const mode = (cam.mode || "idle").toUpperCase();
+    const modeEl = tile.querySelector(".js-mode");
+    modeEl.textContent = mode;
+    modeEl.className = "chip js-mode" + (cam.mode === "boost" ? " chip-warn" : "");
+
+    const evEl = tile.querySelector(".js-event");
+    if (cam.open_event_id) {
+      evEl.style.display = "";
+      evEl.textContent = "rec #" + cam.open_event_id;
+      evEl.className = "chip js-event chip-accent";
     } else {
-      badgeConn.className = "badge badge-conn badge-disconnected";
-      badgeConn.textContent = "DISCONNECTED";
+      evEl.style.display = "none";
     }
 
-    const badgeDecode = tile.querySelector(".badge-decode");
-    badgeDecode.textContent = (cam.decode || "cpu").toUpperCase();
+    const conn = tile.querySelector(".js-conn");
+    if (cam.connected) {
+      conn.className = "badge js-conn badge-connected";
+      conn.textContent = "LIVE";
+    } else {
+      conn.className = "badge js-conn badge-disconnected";
+      conn.textContent = "OFFLINE";
+    }
 
-    tile.querySelector(".cam-fps").textContent = `FPS: ${cam.fps_analyzed || 0}`;
-    tile.querySelector(".cam-restarts").textContent = `Restarts: ${cam.restarts || 0}`;
-
-    // Draw client-side overlays if available
-    drawLiveCameraDetections(tile, cam.detections || []);
+    const dec = tile.querySelector(".js-decode");
+    if (dec) dec.textContent = (cam.decode || "cpu").toUpperCase();
+    const fps = tile.querySelector(".js-fps");
+    if (fps) fps.textContent = `${cam.fps_analyzed ?? 0} fps`;
+    tile.classList.toggle("is-active", tile.dataset.slug === liveHeroSlug);
   });
 }
-function drawLiveCameraDetections(tile, detections) {
-  const canvas = tile.querySelector(".camera-live-overlay");
-  if (!canvas) return;
-  const container = tile.querySelector(".camera-media");
-  if (!container) return;
 
-  if (canvas.width !== container.clientWidth || canvas.height !== container.clientHeight) {
-    canvas.width = container.clientWidth;
-    canvas.height = container.clientHeight;
+function camListByName(cameras) {
+  const map = {};
+  Object.values(cameras).forEach((c) => { map[c.slug] = c; });
+  return map;
+}
+
+// --- detections polling + overlays ---
+async function pollLiveDetections() {
+  if (document.getElementById("view-live").classList.contains("hidden")) return;
+  const cams = Object.values(liveCameras);
+  await Promise.all(cams.map(async (cam) => {
+    try {
+      const r = await fetch(`/api/live/${encodeURIComponent(cam.slug)}/detections`);
+      if (r.ok) liveDetections[cam.slug] = await r.json();
+    } catch (_) { /* ignore transient errors */ }
+  }));
+  drawAllOverlays();
+}
+
+function drawAllOverlays() {
+  document.querySelectorAll(".cam-tile").forEach((tile) => {
+    drawTileOverlay(tile, liveDetections[tile.dataset.slug]);
+  });
+}
+
+/**
+ * Letterbox-correct overlay. The <img> uses object-fit: contain, so boxes must
+ * be mapped into the *rendered image rect*, not the raw canvas rect.
+ */
+function drawTileOverlay(tile, data) {
+  const media = tile.querySelector(".cam-media");
+  const canvas = tile.querySelector(".camera-live-overlay");
+  const img = tile.querySelector(".cam-media img");
+  if (!media || !canvas || !img) return;
+
+  const cw = media.clientWidth;
+  const ch = media.clientHeight;
+  if (cw === 0 || ch === 0) return;
+  if (canvas.width !== cw || canvas.height !== ch) {
+    canvas.width = cw;
+    canvas.height = ch;
   }
 
   const ctx = canvas.getContext("2d");
-  ctx.clearRect(0, 0, canvas.width, canvas.height);
-  if (!showClientOverlays) return;
+  ctx.clearRect(0, 0, cw, ch);
+  if (!showClientOverlays || !data) return;
 
-  detections.forEach((d) => {
-    if (!Array.isArray(d.box_norm) || d.box_norm.length !== 4) return;
-    const x1 = d.box_norm[0] * canvas.width;
-    const y1 = d.box_norm[1] * canvas.height;
-    const w = (d.box_norm[2] - d.box_norm[0]) * canvas.width;
-    const h = (d.box_norm[3] - d.box_norm[1]) * canvas.height;
+  const isHero = tile.classList.contains("is-hero");
+  const fs = isHero ? 12 : 10;
 
-    let color = "#38bdf8"; // blue vehicle
-    if (d.is_anchored) {
-      color = "#eab308"; // gold anchored
-    } else if (d.class_name === "person") {
-      color = "#10b981"; // green person
-    } else if (d.class_name === "car" || d.class_name === "truck" || d.class_name === "bus") {
-      color = "#ef4444"; // red vehicle
+  // Rendered image rect (account for object-fit: contain letterboxing)
+  const iw = img.naturalWidth || 16;
+  const ih = img.naturalHeight || 9;
+  const scale = Math.min(cw / iw, ch / ih);
+  const dw = iw * scale;
+  const dh = ih * scale;
+  const ox = (cw - dw) / 2;
+  const oy = (ch - dh) / 2;
+  const px = (n) => [ox + n[0] * dw, oy + n[1] * dh];
+
+  // 1. Zones
+  (data.zones || []).forEach((z) => {
+    const poly = z.polygon || [];
+    if (poly.length < 3) return;
+    const pts = poly.map(px);
+    ctx.beginPath();
+    pts.forEach(([x, y], i) => (i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y)));
+    ctx.closePath();
+    ctx.setLineDash([6, 5]);
+    ctx.lineWidth = 1.5;
+    ctx.strokeStyle = z.type === "ignore" ? "rgba(150,160,175,0.55)" : "rgba(91,200,232,0.6)";
+    ctx.stroke();
+    ctx.setLineDash([]);
+    if (isHero && poly[0]) {
+      const [lx, ly] = px(poly[0]);
+      drawPill(ctx, `${z.type === "ignore" ? "ignore" : ""} ${z.name}`.trim(), lx, ly - 4, "#26303c", "rgba(200,215,230,0.85)", fs - 1);
     }
+  });
 
-    // Bounding box
+  // 2. Vehicle scenery slots
+  (data.slots || []).forEach((s) => {
+    const b = s.slot_box || [];
+    if (b.length !== 4) return;
+    const [x1, y1] = px([b[0], b[1]]);
+    const [x2, y2] = px([b[2], b[3]]);
+    ctx.setLineDash([4, 4]);
+    ctx.lineWidth = 1.5;
+    ctx.strokeStyle = s.is_friendly ? "rgba(227,165,69,0.75)" : "rgba(229,96,79,0.75)";
+    ctx.strokeRect(x1, y1, x2 - x1, y2 - y1);
+    ctx.setLineDash([]);
+    if (isHero) drawPill(ctx, s.name, x1, y1 - 4, "#2a2416", "rgba(240,205,140,0.95)", fs - 1);
+  });
+
+  // 3. Detections
+  (data.detections || []).forEach((d) => {
+    const b = d.box_norm || [];
+    if (b.length !== 4) return;
+    const [x1, y1] = px([b[0], b[1]]);
+    const [x2, y2] = px([b[2], b[3]]);
+    const w = x2 - x1;
+    const h = y2 - y1;
+
+    let color = "#5bc8e8"; // default marker
+    if (d.is_anchored) color = "#e3a545";
+    else if (d.class_name === "person") color = "#3ecf9a";
+    else if (["car", "truck", "bus"].includes(d.class_name)) color = "#e5604f";
+
     ctx.strokeStyle = color;
-    ctx.lineWidth = 2;
+    ctx.lineWidth = isHero ? 2 : 1.5;
     ctx.strokeRect(x1, y1, w, h);
 
-    // High-contrast pill label
-    const text = d.anchored_name ? `${d.anchored_name} #${d.track_id} ${d.conf}` : `${d.class_name} #${d.track_id} ${d.conf}`;
-    ctx.font = "bold 12px sans-serif";
-    const textWidth = ctx.measureText(text).width;
-    const pad = 4;
-
-    const pillX = Math.max(0, x1);
-    const pillY = Math.max(0, y1 - 20);
-    ctx.fillStyle = "rgba(18, 18, 18, 0.85)";
-    ctx.fillRect(pillX, pillY, textWidth + pad * 2, 18);
-    ctx.strokeStyle = color;
-    ctx.lineWidth = 1;
-    ctx.strokeRect(pillX, pillY, textWidth + pad * 2, 18);
-
-    ctx.fillStyle = "#ffffff";
-    ctx.fillText(text, pillX + pad, pillY + 13);
+    const label = d.anchored_name
+      ? `${d.anchored_name} #${d.track_id} ${d.conf}`
+      : `${d.class_name} #${d.track_id} ${d.conf}`;
+    drawPill(ctx, label, x1, y1 - 2, tintDark(color), "#ffffff", fs);
   });
 }
 
-
-function addLiveFeedItem(ev) {
-  const feed = document.getElementById("live-feed-list");
-  if (!feed) return;
-
-  const item = document.createElement("div");
-  item.className = "feed-item";
-  const dateStr = ev.started_at ? new Date(ev.started_at * 1000).toLocaleTimeString() : "";
-  const behaviors = Array.isArray(ev.behaviors) ? ev.behaviors.join(", ") : "";
-
-  item.innerHTML = `
-    <div class="feed-item-header">
-      <span>${escapeHtml(ev.camera || "")}</span>
-      <span>${dateStr}</span>
-    </div>
-    <div class="feed-item-title">${escapeHtml(ev.primary_class || "event")}</div>
-    <div style="font-size: 0.8rem; color: var(--muted);">${escapeHtml(behaviors)}</div>
-  `;
-  item.onclick = () => {
-    window.location.hash = `#/events/${ev.id}`;
-  };
-
-  feed.prepend(item);
-  // Keep only latest 30 items
-  while (feed.children.length > 30) {
-    feed.removeChild(feed.lastChild);
-  }
+function drawPill(ctx, text, x, y, bg, fg, fontSize) {
+  ctx.font = `600 ${fontSize}px "IBM Plex Mono", monospace`;
+  const tw = ctx.measureText(text).width;
+  const pad = 5;
+  const h = fontSize + 8;
+  const px = Math.max(0, x);
+  const py = Math.max(0, y - h);
+  ctx.fillStyle = bg;
+  ctx.globalAlpha = 0.88;
+  ctx.fillRect(px, py, tw + pad * 2, h);
+  ctx.globalAlpha = 1;
+  ctx.fillStyle = fg;
+  ctx.fillText(text, px + pad, py + fontSize + 3);
 }
 
-// Events View
+function tintDark(hex) {
+  const r = parseInt(hex.slice(1, 3), 16);
+  const g = parseInt(hex.slice(3, 5), 16);
+  const b = parseInt(hex.slice(5, 7), 16);
+  return `rgba(${Math.round(r * 0.22)},${Math.round(g * 0.22)},${Math.round(b * 0.22)},0.9)`;
+}
+
+// --- event feed ---
+async function prefillFeed() {
+  const feed = document.getElementById("live-feed-list");
+  if (feed.dataset.prefilled === "1") return;
+  feed.dataset.prefilled = "1";
+  try {
+    const res = await fetch("/api/events?limit=8");
+    const data = await res.json();
+    const items = (data.items || []).slice().reverse();
+    items.forEach((ev) => addLiveFeedItem(ev, true));
+  } catch (_) { /* keep empty state */ }
+}
+
+function addLiveFeedItem(ev, quiet = false) {
+  const feed = document.getElementById("live-feed-list");
+  if (!feed) return;
+  const empty = feed.querySelector(".empty");
+  if (empty) empty.remove();
+
+  const sev = ev.primary_class === "person" ? "sev-person"
+    : ev.primary_class === "vehicle" ? "sev-vehicle" : "sev-alert";
+
+  const item = document.createElement("div");
+  item.className = `feed-item ${sev}`;
+
+  const t = ev.started_at
+    ? new Date(ev.started_at * 1000).toLocaleTimeString([], { hour12: false })
+    : "";
+  const chips = (ev.behaviors || []).map((b) => `<span class="chip">${escapeHtml(b)}</span>`).join("");
+
+  item.innerHTML = `
+    <div class="feed-meta">
+      <span class="feed-cam">${escapeHtml(ev.camera || "")}</span>
+      <span class="feed-time">${t}</span>
+    </div>
+    <div class="feed-title">${escapeHtml(ev.primary_class || "event")} <span class="id">#${ev.id}</span></div>
+    ${chips ? `<div class="feed-chips">${chips}</div>` : ""}`;
+
+  item.onclick = () => { window.location.hash = `#/events/${ev.id}`; };
+
+  if (quiet) feed.appendChild(item);
+  else feed.prepend(item);
+
+  while (feed.children.length > 40) feed.removeChild(feed.lastChild);
+}
+
+// ============================================================================
+// EVENTS VIEW
+// ============================================================================
 let eventsOffset = 0;
 const EVENTS_LIMIT = 30;
 
 async function loadEventsView() {
-  populateEventFilters();
+  await populateEventFilters();
   await fetchEvents();
 }
 
 async function populateEventFilters() {
-  // Populate cameras
   try {
     const statRes = await fetch("/api/live/status");
     const statData = await statRes.json();
@@ -282,7 +484,6 @@ async function populateEventFilters() {
       });
     }
 
-    // Populate identities
     const idRes = await fetch("/api/identities");
     const idData = await idRes.json();
     const idSelect = document.getElementById("event-filter-identity");
@@ -295,7 +496,7 @@ async function populateEventFilters() {
       });
     }
   } catch (err) {
-    console.error("Filter populate error:", err);
+    console.error("filter populate error:", err);
   }
 }
 
@@ -310,16 +511,13 @@ async function fetchEvents(offset = 0) {
     offset: offset.toString(),
     limit: EVENTS_LIMIT.toString(),
   });
-
   if (camera) params.set("camera", camera);
   if (behavior) params.set("behavior", behavior);
   if (identityId) params.set("identity_id", identityId);
-
   if (dateVal) {
     const startEpoch = new Date(`${dateVal}T00:00:00Z`).getTime() / 1000;
-    const endEpoch = startEpoch + 86400;
     params.set("since", startEpoch.toString());
-    params.set("until", endEpoch.toString());
+    params.set("until", (startEpoch + 86400).toString());
   }
 
   try {
@@ -328,7 +526,7 @@ async function fetchEvents(offset = 0) {
     renderEventsGrid(data.items || []);
     renderPagination("events-pagination", data.total || 0, offset, EVENTS_LIMIT, fetchEvents);
   } catch (err) {
-    console.error("Fetch events error:", err);
+    console.error("fetch events error:", err);
   }
 }
 
@@ -337,125 +535,106 @@ function renderEventsGrid(items) {
   grid.innerHTML = "";
 
   if (items.length === 0) {
-    grid.innerHTML = `<div style="grid-column: 1 / -1; text-align: center; color: var(--muted); padding: 40px;">No events matching filters</div>`;
+    grid.innerHTML = `<div class="empty" style="grid-column: 1/-1;"><strong>No events match</strong>Loosen the filters or check back later.</div>`;
     return;
   }
 
   items.forEach((ev) => {
     const card = document.createElement("div");
     card.className = "event-card";
+
     const dateStr = ev.started_at ? new Date(ev.started_at * 1000).toLocaleString() : "";
-
-    const chipsHtml = (ev.behaviors || [])
-      .map((b) => `<span class="chip">${escapeHtml(b)}</span>`)
-      .join("");
-
-    const identityChips = (ev.identities || [])
-      .map((idName) => `<span class="chip chip-identity">${escapeHtml(idName)}</span>`)
-      .join("");
-
-    const thumbSrc = ev.thumb_url || "/static/placeholder.jpg";
+    const chips = (ev.behaviors || []).map((b) => `<span class="chip">${escapeHtml(b)}</span>`).join("");
+    const identities = (ev.identities || []).map((n) => `<span class="chip chip-identity">${escapeHtml(n)}</span>`).join("");
+    const cls = (ev.primary_class || "event");
+    const clsChip = cls === "person" ? "chip-person" : cls === "vehicle" ? "chip-vehicle" : "";
+    const status = ev.status === "finalized" ? "" : `<span class="chip chip-warn">${escapeHtml(ev.status || "")}</span>`;
 
     card.innerHTML = `
-      <div class="card-thumb">
-        <img src="${thumbSrc}" alt="Event ${ev.id}" loading="lazy">
+      <div class="card-thumb ${ev.thumb_url ? "" : "no-thumb"}">
+        ${ev.thumb_url ? `<img src="${ev.thumb_url}" alt="Event ${ev.id} thumbnail" loading="lazy">` : ""}
       </div>
       <div class="card-body">
         <div class="card-meta">
-          <span>${escapeHtml(ev.camera || "")}</span>
+          <span class="card-cam">${escapeHtml(ev.camera || "")}</span>
           <span>${dateStr}</span>
         </div>
-        <div style="font-weight: 600; font-size: 1rem; margin-bottom: 4px;">
-          ${escapeHtml(ev.primary_class || "event").toUpperCase()}
-          <span style="font-size: 0.8rem; color: var(--muted); font-weight: normal;">#${ev.id} (${ev.status})</span>
+        <div class="card-title">
+          <span class="chip ${clsChip}">${escapeHtml(cls)}</span>
+          <span class="id">#${ev.id}</span>
+          ${status}
         </div>
-        <div class="chips">${chipsHtml} ${identityChips}</div>
-      </div>
-    `;
+        <div class="chips">${chips}${identities}</div>
+      </div>`;
 
-    card.onclick = () => {
-      window.location.hash = `#/events/${ev.id}`;
-    };
-
+    card.onclick = () => { window.location.hash = `#/events/${ev.id}`; };
     grid.appendChild(card);
   });
 }
 
-// Modal View
+// ============================================================================
+// EVENT / CLIP MODAL
+// ============================================================================
 async function openEventModal(eventId) {
   const modal = document.getElementById("modal");
-  const modalBody = document.getElementById("modal-body");
-  modalBody.innerHTML = `<div style="text-align: center; padding: 40px;">Loading event ${eventId}...</div>`;
+  const body = document.getElementById("modal-body");
+  body.innerHTML = `<div class="empty"><strong>Loading event ${escapeHtml(String(eventId))}</strong>Fetching clip and detections…</div>`;
   modal.classList.remove("hidden");
 
   try {
     const res = await fetch(`/api/events/${eventId}`);
     if (!res.ok) {
-      modalBody.innerHTML = `<div style="text-align: center; padding: 40px; color: var(--accent-error);">Event ${eventId} not found</div>`;
+      body.innerHTML = `<div class="empty"><strong>Event ${escapeHtml(String(eventId))} not found</strong>It may have been removed.</div>`;
       return;
     }
     const ev = await res.json();
     const dateStr = ev.started_at ? new Date(ev.started_at * 1000).toLocaleString() : "";
 
-    let videoHtml = "";
-    if (ev.clip_url) {
-      videoHtml = `<video controls autoplay style="width: 100%; max-height: 480px; background: #000; border-radius: 6px;" src="${ev.clip_url}"></video>`;
-    } else {
-      videoHtml = `
-        <div style="width: 100%; height: 260px; background: #000; display: flex; align-items: center; justify-content: center; flex-direction: column; gap: 8px; border-radius: 6px;">
-          ${ev.thumb_url ? `<img src="${ev.thumb_url}" style="max-height: 200px; object-fit: contain;">` : ""}
-          <div style="color: var(--muted); font-size: 0.9rem;">Clip processing or finalized...</div>
-        </div>
-      `;
-    }
+    const videoHtml = ev.clip_url
+      ? `<video controls autoplay muted style="width:100%;max-height:480px;background:#05070a;border-radius:10px;" src="${ev.clip_url}"></video>`
+      : `<div class="empty" style="height:220px;display:grid;place-content:center;">${ev.thumb_url ? `<img src="${ev.thumb_url}" style="max-height:180px;object-fit:contain;border-radius:8px;" alt="Event still">` : ""}<strong style="margin-top:10px;">Clip processing</strong>The video will appear once finalized.</div>`;
+
+    const behaviors = (ev.behaviors || []).map((b) => `<span class="chip">${escapeHtml(b)}</span>`).join("");
 
     let facesHtml = "";
     if (ev.faces && ev.faces.length > 0) {
       facesHtml = `
-        <div style="margin-top: 20px;">
-          <h4 style="margin-bottom: 10px;">Detected Faces (${ev.faces.length})</h4>
-          <div style="display: flex; gap: 12px; flex-wrap: wrap;">
-            ${ev.faces
-              .map(
-                (f) => `
-              <div style="display: flex; flex-direction: column; align-items: center; background: var(--bg); border: 1px solid var(--border); border-radius: 6px; padding: 8px; gap: 6px;">
-                <img src="${f.crop_url || f.context_url}" style="width: 80px; height: 80px; object-fit: cover; border-radius: 4px;">
-                <span style="font-size: 0.8rem; font-weight: 600;">${escapeHtml(f.identity_name || `Cluster #${f.cluster_id || "unknown"}`)}</span>
-                <span style="font-size: 0.7rem; color: var(--muted);">Width: ${Math.round(f.face_width || 0)}px</span>
-              </div>
-            `
-              )
-              .join("")}
+        <div style="margin-top:18px;">
+          <div class="eyebrow" style="margin-bottom:8px;">Faces · ${ev.faces.length}</div>
+          <div style="display:flex;gap:10px;flex-wrap:wrap;">
+            ${ev.faces.map((f) => `
+              <figure style="margin:0;display:flex;flex-direction:column;gap:5px;align-items:center;">
+                <img src="${f.crop_url || f.context_url}" alt="Face crop" style="width:76px;height:76px;object-fit:cover;border-radius:8px;border:1px solid var(--line);">
+                <figcaption style="font-size:0.72rem;color:var(--text-dim);text-align:center;">
+                  ${escapeHtml(f.identity_name || `cluster ${f.cluster_id ?? "?"}`)}<br>
+                  <span class="mono" style="color:var(--text-faint);">${Math.round(f.face_width || 0)}px</span>
+                </figcaption>
+              </figure>`).join("")}
           </div>
-        </div>
-      `;
+        </div>`;
     }
 
-    modalBody.innerHTML = `
-      <h3 style="margin-bottom: 8px;">${escapeHtml(ev.camera)} - ${escapeHtml(ev.primary_class).toUpperCase()} #${ev.id}</h3>
-      <div style="color: var(--muted); font-size: 0.85rem; margin-bottom: 14px;">${dateStr} &bull; Status: ${escapeHtml(ev.status)}</div>
+    body.innerHTML = `
+      <div class="eyebrow">${escapeHtml(ev.camera || "")} · ${dateStr} · ${escapeHtml(ev.status || "")}</div>
+      <h2 style="margin:4px 0 12px;">${escapeHtml(ev.primary_class || "event")} <span class="mono" style="color:var(--text-faint);font-size:0.9rem;">#${ev.id}</span></h2>
       ${videoHtml}
-      <div style="margin-top: 14px;">
-        <strong>Behaviors:</strong> ${(ev.behaviors || []).join(", ") || "None"}
-      </div>
-      ${facesHtml}
-    `;
+      ${behaviors ? `<div class="chips" style="margin-top:14px;">${behaviors}</div>` : ""}
+      ${facesHtml}`;
   } catch (err) {
-    modalBody.innerHTML = `<div style="text-align: center; padding: 40px; color: var(--accent-error);">Error loading event: ${err}</div>`;
+    body.innerHTML = `<div class="empty"><strong>Failed to load event</strong>${escapeHtml(String(err))}</div>`;
   }
 }
 
 function closeModal() {
   const modal = document.getElementById("modal");
-  const modalBody = document.getElementById("modal-body");
+  document.getElementById("modal-body").innerHTML = "";
   modal.classList.add("hidden");
-  modalBody.innerHTML = "";
-  if (window.location.hash.startsWith("#/events/")) {
-    window.location.hash = "#/events";
-  }
+  if (window.location.hash.startsWith("#/events/")) window.location.hash = "#/events";
 }
 
-// Faces & Identities View
+// ============================================================================
+// FACES VIEW
+// ============================================================================
 async function loadFacesView() {
   await fetchIdentities();
   await fetchClusters();
@@ -467,11 +646,10 @@ async function fetchIdentities() {
     const identities = await res.json();
     renderIdentities(identities);
 
-    // Update datalist
     const dl = document.getElementById("identities-datalist");
     dl.innerHTML = identities.map((i) => `<option value="${escapeHtml(i.name)}"></option>`).join("");
   } catch (err) {
-    console.error("Fetch identities error:", err);
+    console.error("fetch identities error:", err);
   }
 }
 
@@ -480,30 +658,28 @@ function renderIdentities(items) {
   grid.innerHTML = "";
 
   if (items.length === 0) {
-    grid.innerHTML = `<div style="grid-column: 1 / -1; color: var(--muted);">No registered identities yet. Create one or assign an unknown cluster!</div>`;
+    grid.innerHTML = `<div class="empty" style="grid-column: 1/-1;"><strong>No identities yet</strong>Create one, or label an unknown cluster from the list below.</div>`;
     return;
   }
 
   items.forEach((ident) => {
     const card = document.createElement("div");
     card.className = "face-card";
-
-    const samplesHtml = (ident.sample_urls || [])
-      .map((url) => `<img src="${url}" class="face-sample-img" alt="${ident.name}">`)
+    const samples = (ident.sample_urls || [])
+      .map((url) => `<img src="${url}" class="face-sample-img" alt="${escapeHtml(ident.name)} sample">`)
       .join("");
 
     card.innerHTML = `
       <div class="face-card-header">
-        <strong style="font-size: 1.05rem;">${escapeHtml(ident.name)}</strong>
-        <span class="badge" style="background: var(--bg);">${ident.face_count} faces</span>
+        <strong style="font-size:0.98rem;">${escapeHtml(ident.name)}</strong>
+        <span class="chip">${ident.face_count} faces</span>
       </div>
-      <div class="face-samples">${samplesHtml || '<span style="color: var(--muted); font-size: 0.8rem;">No photo samples</span>'}</div>
-      <div style="display: flex; gap: 6px; margin-top: auto;">
-        <button class="btn btn-outline btn-sm btn-rename">Rename</button>
-        <button class="btn btn-outline btn-sm btn-upload">Upload Photo</button>
-        <button class="btn btn-danger btn-sm btn-delete" style="margin-left: auto;">Delete</button>
-      </div>
-    `;
+      <div class="face-samples">${samples || '<span style="color:var(--text-faint);font-size:0.8rem;">No photo samples</span>'}</div>
+      <div style="display:flex;gap:6px;margin-top:auto;">
+        <button class="btn btn-ghost btn-xs btn-rename">Rename</button>
+        <button class="btn btn-ghost btn-xs btn-upload">Upload photo</button>
+        <button class="btn btn-danger btn-xs btn-delete" style="margin-left:auto;">Delete</button>
+      </div>`;
 
     card.querySelector(".btn-rename").onclick = () => renameIdentity(ident.id, ident.name);
     card.querySelector(".btn-delete").onclick = () => deleteIdentity(ident.id);
@@ -514,38 +690,32 @@ function renderIdentities(items) {
 }
 
 async function renameIdentity(id, currentName) {
-  const newName = prompt("Enter new name for identity:", currentName);
+  const newName = prompt("New name for this identity:", currentName);
   if (!newName || newName.trim() === currentName) return;
-
   try {
     const res = await fetch(`/api/identities/${id}`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ name: newName.trim() }),
     });
-    if (res.ok) {
-      loadFacesView();
-    } else {
+    if (res.ok) loadFacesView();
+    else {
       const err = await res.json();
-      alert(`Rename failed: ${err.detail || "Error"}`);
+      showToast("Rename failed", err.detail || "Error");
     }
   } catch (err) {
-    alert(`Rename failed: ${err}`);
+    showToast("Rename failed", String(err));
   }
 }
 
 async function deleteIdentity(id) {
-  if (!confirm("Are you sure you want to delete this identity? Its faces will become an unknown cluster.")) return;
-
+  if (!confirm("Delete this identity? Its faces become one unknown cluster.")) return;
   try {
     const res = await fetch(`/api/identities/${id}`, { method: "DELETE" });
-    if (res.ok) {
-      loadFacesView();
-    } else {
-      alert("Failed to delete identity");
-    }
+    if (res.ok) loadFacesView();
+    else showToast("Delete failed", "Identity could not be removed");
   } catch (err) {
-    alert(`Delete failed: ${err}`);
+    showToast("Delete failed", String(err));
   }
 }
 
@@ -555,24 +725,19 @@ function uploadIdentityPhoto(id) {
   input.accept = "image/*";
   input.onchange = async () => {
     if (!input.files || input.files.length === 0) return;
-    const file = input.files[0];
     const formData = new FormData();
-    formData.append("file", file);
-
+    formData.append("file", input.files[0]);
     try {
-      const res = await fetch(`/api/identities/${id}/photos`, {
-        method: "POST",
-        body: formData,
-      });
+      const res = await fetch(`/api/identities/${id}/photos`, { method: "POST", body: formData });
       if (res.ok) {
-        showToast("Success", "Photo uploaded and face embedded!");
+        showToast("Photo added", "Face embedded into this identity.");
         loadFacesView();
       } else {
         const err = await res.json();
-        alert(`Photo upload failed: ${err.detail || "No face detected"}`);
+        showToast("Photo rejected", err.detail || "No face detected");
       }
     } catch (err) {
-      alert(`Upload error: ${err}`);
+      showToast("Upload error", String(err));
     }
   };
   input.click();
@@ -581,10 +746,9 @@ function uploadIdentityPhoto(id) {
 async function fetchClusters() {
   try {
     const res = await fetch("/api/faces/clusters");
-    const clusters = await res.json();
-    renderClusters(clusters);
+    renderClusters(await res.json());
   } catch (err) {
-    console.error("Fetch clusters error:", err);
+    console.error("fetch clusters error:", err);
   }
 }
 
@@ -593,7 +757,7 @@ function renderClusters(items) {
   grid.innerHTML = "";
 
   if (items.length === 0) {
-    grid.innerHTML = `<div style="grid-column: 1 / -1; color: var(--muted);">No unknown face clusters detected.</div>`;
+    grid.innerHTML = `<div class="empty" style="grid-column: 1/-1;"><strong>No unknown clusters</strong>Unrecognised faces will accumulate here for labelling.</div>`;
     return;
   }
 
@@ -601,43 +765,37 @@ function renderClusters(items) {
     const card = document.createElement("div");
     card.className = "face-card";
     const dateStr = c.last_seen ? new Date(c.last_seen * 1000).toLocaleString() : "";
-
-    const samplesHtml = (c.sample_urls || [])
-      .map((url) => `<img src="${url}" class="face-sample-img" alt="Cluster ${c.cluster_id}">`)
+    const samples = (c.sample_urls || [])
+      .map((url) => `<img src="${url}" class="face-sample-img" alt="Cluster ${c.cluster_id} sample">`)
       .join("");
 
     card.innerHTML = `
       <div class="face-card-header">
-        <strong style="font-size: 1rem;">Cluster #${c.cluster_id}</strong>
-        <span class="badge" style="background: var(--bg);">${c.count} sightings</span>
+        <strong style="font-size:0.95rem;">Cluster #${c.cluster_id}</strong>
+        <span class="chip">${c.count} sightings</span>
       </div>
-      <div style="font-size: 0.75rem; color: var(--muted);">Last seen: ${dateStr}</div>
-      <div class="face-samples">${samplesHtml}</div>
-      <div style="display: flex; gap: 6px; margin-top: auto;">
-        <input type="text" class="form-control form-control-sm cluster-name-input" list="identities-datalist" placeholder="Assign identity name..." style="flex: 1;">
-        <button class="btn btn-primary btn-sm btn-assign">Assign</button>
-      </div>
-    `;
+      <div style="font-size:0.74rem;color:var(--text-faint);">Last seen ${dateStr}</div>
+      <div class="face-samples">${samples}</div>
+      <div style="display:flex;gap:6px;margin-top:auto;">
+        <input type="text" class="form-control cluster-name-input" list="identities-datalist" placeholder="Assign a name…" style="flex:1;">
+        <button class="btn btn-primary btn-xs btn-assign">Assign</button>
+      </div>`;
 
     card.querySelector(".btn-assign").onclick = async () => {
-      const input = card.querySelector(".cluster-name-input");
-      const name = input.value.trim();
-      if (!name) return alert("Please enter an identity name");
-
+      const name = card.querySelector(".cluster-name-input").value.trim();
+      if (!name) { showToast("Name required", "Type or pick an identity first."); return; }
       try {
         const res = await fetch(`/api/faces/clusters/${c.cluster_id}/assign`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ name: name }),
+          body: JSON.stringify({ name }),
         });
         if (res.ok) {
-          showToast("Success", `Assigned cluster to ${name}`);
+          showToast("Cluster labelled", `Assigned to ${name}.`);
           loadFacesView();
-        } else {
-          alert("Failed to assign cluster");
-        }
+        } else showToast("Assign failed", "Cluster could not be labelled");
       } catch (err) {
-        alert(`Error assigning cluster: ${err}`);
+        showToast("Assign error", String(err));
       }
     };
 
@@ -645,7 +803,9 @@ function renderClusters(items) {
   });
 }
 
-// Scenery & Vehicle Anchors View
+// ============================================================================
+// SCENERY VIEW
+// ============================================================================
 let currentSceneryCam = "";
 let currentScenerySlots = [];
 let drawingSlot = false;
@@ -674,13 +834,11 @@ async function populateSceneryCameras() {
     camNames.forEach((name) => {
       const opt = document.createElement("option");
       opt.value = name;
-      opt.textContent = `${name} (${cameras[name].slug})`;
+      opt.textContent = name;
       select.appendChild(opt);
     });
 
-    if (!currentSceneryCam || !cameras[currentSceneryCam]) {
-      currentSceneryCam = camNames[0];
-    }
+    if (!currentSceneryCam || !cameras[currentSceneryCam]) currentSceneryCam = camNames[0];
     select.value = currentSceneryCam;
 
     select.onchange = () => {
@@ -690,21 +848,18 @@ async function populateSceneryCameras() {
 
     updateSceneryView();
   } catch (err) {
-    console.error("Scenery cameras load error:", err);
+    console.error("scenery cameras error:", err);
   }
 }
 
 async function updateSceneryView() {
   if (!currentSceneryCam) return;
-  document.getElementById("scenery-cam-title").textContent = `Camera: ${currentSceneryCam}`;
+  document.getElementById("scenery-cam-title").textContent = currentSceneryCam;
 
   const slug = currentSceneryCam.replace(/[^A-Za-z0-9_-]+/g, "_");
   const img = document.getElementById("scenery-snap-img");
   img.src = `/api/live/${encodeURIComponent(slug)}/snapshot.jpg?t=${Date.now()}`;
-
-  img.onload = () => {
-    drawSceneryOverlay();
-  };
+  img.onload = () => drawSceneryOverlay();
 
   await fetchScenerySlots();
 }
@@ -713,47 +868,43 @@ async function fetchScenerySlots() {
   if (!currentSceneryCam) return;
   try {
     const res = await fetch(`/api/scenery/slots?camera=${encodeURIComponent(currentSceneryCam)}`);
-    const slots = await res.json();
-    currentScenerySlots = slots;
-    renderScenerySlots(slots);
+    currentScenerySlots = await res.json();
+    renderScenerySlots(currentScenerySlots);
     drawSceneryOverlay();
   } catch (err) {
-    console.error("Fetch slots error:", err);
+    console.error("fetch slots error:", err);
   }
 }
 
 function renderScenerySlots(slots) {
-  const grid = document.getElementById("scenery-slots-grid");
-  grid.innerHTML = "";
+  const host = document.getElementById("scenery-slots-grid");
+  host.innerHTML = "";
 
   if (slots.length === 0) {
-    grid.innerHTML = `<div style="grid-column: 1 / -1; color: var(--muted); padding: 20px 0;">No vehicle slots registered for ${escapeHtml(currentSceneryCam)}. Click and drag on the snapshot above to define a persistent slot anchor!</div>`;
+    host.innerHTML = `<div class="empty"><strong>No slots for ${escapeHtml(currentSceneryCam)}</strong>Drag a box over a parked car to anchor it.</div>`;
     return;
   }
 
   slots.forEach((s) => {
-    const card = document.createElement("div");
-    card.className = "face-card";
-    const boxStr = Array.isArray(s.slot_box) ? s.slot_box.map(v => typeof v === 'number' ? v.toFixed(2) : v).join(", ") : "";
+    const row = document.createElement("div");
+    row.className = "feed-item";
+    const boxStr = Array.isArray(s.slot_box) ? s.slot_box.map((v) => (typeof v === "number" ? v.toFixed(2) : v)).join(", ") : "";
 
-    card.innerHTML = `
-      <div class="face-card-header">
-        <strong style="font-size: 1rem;">${escapeHtml(s.name)}</strong>
-        <span class="badge" style="background: ${s.is_friendly ? 'rgba(16, 185, 129, 0.2); color: #34d399;' : 'rgba(239, 68, 68, 0.2); color: #f87171;'}">
-          ${s.is_friendly ? 'Friendly Anchor' : 'Alert Anchor'}
-        </span>
+    row.innerHTML = `
+      <div class="feed-meta">
+        <span class="feed-cam">${escapeHtml(s.name)}</span>
+        <span class="chip ${s.is_friendly ? "chip-ok" : "chip-warn"}">${s.is_friendly ? "friendly" : "alert"}</span>
       </div>
-      <div style="font-size: 0.8rem; color: var(--muted);">
-        <div>Box [x1, y1, x2, y2]: [${boxStr}]</div>
-        <div>Dominant Color: <strong>${escapeHtml(s.color_name || 'unknown')}</strong></div>
+      <div class="feed-chips" style="margin-bottom:6px;">
+        <span class="chip">${escapeHtml(s.color_name || "unknown")}</span>
+        <span class="chip mono">[${boxStr}]</span>
       </div>
-      <div style="display: flex; gap: 8px; margin-top: auto;">
-        <button class="btn btn-outline btn-sm btn-toggle-friendly">${s.is_friendly ? 'Mark Alert' : 'Mark Friendly'}</button>
-        <button class="btn btn-danger btn-sm btn-delete-slot" style="margin-left: auto;">Delete</button>
-      </div>
-    `;
+      <div style="display:flex;gap:6px;">
+        <button class="btn btn-ghost btn-xs btn-toggle-friendly">${s.is_friendly ? "Mark alert" : "Mark friendly"}</button>
+        <button class="btn btn-danger btn-xs btn-delete-slot" style="margin-left:auto;">Delete</button>
+      </div>`;
 
-    card.querySelector(".btn-toggle-friendly").onclick = async () => {
+    row.querySelector(".btn-toggle-friendly").onclick = async () => {
       try {
         const res = await fetch(`/api/scenery/slots/${s.id}`, {
           method: "PATCH",
@@ -762,42 +913,41 @@ function renderScenerySlots(slots) {
         });
         if (res.ok) fetchScenerySlots();
       } catch (err) {
-        alert(`Error updating slot: ${err}`);
+        showToast("Update failed", String(err));
       }
     };
 
-    card.querySelector(".btn-delete-slot").onclick = async () => {
-      if (!confirm(`Delete vehicle slot "${s.name}"?`)) return;
+    row.querySelector(".btn-delete-slot").onclick = async () => {
+      if (!confirm(`Delete slot "${s.name}"?`)) return;
       try {
         const res = await fetch(`/api/scenery/slots/${s.id}`, { method: "DELETE" });
         if (res.ok) {
-          showToast("Deleted", `Removed slot "${s.name}"`);
+          showToast("Slot removed", s.name);
           fetchScenerySlots();
         }
       } catch (err) {
-        alert(`Error deleting slot: ${err}`);
+        showToast("Delete error", String(err));
       }
     };
 
-    grid.appendChild(card);
+    host.appendChild(row);
   });
 }
 
 function initSceneryCanvas() {
   const canvas = document.getElementById("scenery-overlay-canvas");
-  const container = document.getElementById("scenery-canvas-container");
-  if (!canvas) return;
+  const container = document.querySelector(".snap-frame");
+  if (!canvas || !container) return;
 
-  function resizeCanvas() {
-    if (container && container.clientWidth > 0) {
+  const resize = () => {
+    if (container.clientWidth > 0) {
       canvas.width = container.clientWidth;
       canvas.height = container.clientHeight;
       drawSceneryOverlay();
     }
-  }
-
-  window.addEventListener("resize", resizeCanvas);
-  setTimeout(resizeCanvas, 100);
+  };
+  window.addEventListener("resize", resize);
+  setTimeout(resize, 80);
 
   let startX = 0;
   let startY = 0;
@@ -814,18 +964,12 @@ function initSceneryCanvas() {
     const rect = canvas.getBoundingClientRect();
     const curX = e.clientX - rect.left;
     const curY = e.clientY - rect.top;
-
     drawSceneryOverlay();
     const ctx = canvas.getContext("2d");
-    ctx.strokeStyle = "#38bdf8";
+    ctx.strokeStyle = "#5bc8e8";
     ctx.lineWidth = 2;
-    ctx.setLineDash([4, 4]);
-    ctx.strokeRect(
-      Math.min(startX, curX),
-      Math.min(startY, curY),
-      Math.abs(curX - startX),
-      Math.abs(curY - startY)
-    );
+    ctx.setLineDash([5, 4]);
+    ctx.strokeRect(Math.min(startX, curX), Math.min(startY, curY), Math.abs(curX - startX), Math.abs(curY - startY));
     ctx.setLineDash([]);
   };
 
@@ -841,7 +985,7 @@ function initSceneryCanvas() {
     const x2 = Math.max(startX, endX) / canvas.width;
     const y2 = Math.max(startY, endY) / canvas.height;
 
-    if ((x2 - x1) > 0.02 && (y2 - y1) > 0.02) {
+    if (x2 - x1 > 0.02 && y2 - y1 > 0.02) {
       document.getElementById("slot-x1").value = x1.toFixed(3);
       document.getElementById("slot-y1").value = y1.toFixed(3);
       document.getElementById("slot-x2").value = x2.toFixed(3);
@@ -863,32 +1007,28 @@ function initSceneryCanvas() {
       const y2 = parseFloat(document.getElementById("slot-y2").value);
       const isFriendly = document.getElementById("slot-friendly-check").checked;
 
-      if (!name) return alert("Please enter a vehicle name");
-      if (isNaN(x1) || isNaN(y1) || isNaN(x2) || isNaN(y2)) {
-        return alert("Please define valid slot coordinates by clicking and dragging on the snapshot");
+      if (!name) { showToast("Name required", "Give the slot a vehicle name."); return; }
+      if ([x1, y1, x2, y2].some((v) => isNaN(v))) {
+        showToast("Box required", "Drag on the snapshot to define the slot area.");
+        return;
       }
 
       try {
         const res = await fetch("/api/scenery/slots", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            camera: currentSceneryCam,
-            name: name,
-            slot_box: [x1, y1, x2, y2],
-            is_friendly: isFriendly,
-          }),
+          body: JSON.stringify({ camera: currentSceneryCam, name, slot_box: [x1, y1, x2, y2], is_friendly: isFriendly }),
         });
         if (res.ok) {
-          showToast("Saved", `Registered slot "${name}"`);
+          showToast("Slot saved", name);
           document.getElementById("slot-name-input").value = "";
           fetchScenerySlots();
         } else {
           const err = await res.json();
-          alert(`Failed to save slot: ${err.detail || "Error"}`);
+          showToast("Save failed", err.detail || "Error");
         }
       } catch (err) {
-        alert(`Error saving slot: ${err}`);
+        showToast("Save error", String(err));
       }
     };
   }
@@ -902,25 +1042,29 @@ function drawSceneryOverlay() {
 
   currentScenerySlots.forEach((slot) => {
     if (!Array.isArray(slot.slot_box) || slot.slot_box.length !== 4) return;
-    const sx1 = slot.slot_box[0] * canvas.width;
-    const sy1 = slot.slot_box[1] * canvas.height;
-    const sw = (slot.slot_box[2] - slot.slot_box[0]) * canvas.width;
-    const sh = (slot.slot_box[3] - slot.slot_box[1]) * canvas.height;
+    const x1 = slot.slot_box[0] * canvas.width;
+    const y1 = slot.slot_box[1] * canvas.height;
+    const w = (slot.slot_box[2] - slot.slot_box[0]) * canvas.width;
+    const h = (slot.slot_box[3] - slot.slot_box[1]) * canvas.height;
 
-    ctx.strokeStyle = slot.is_friendly ? "#10b981" : "#f59e0b";
+    ctx.strokeStyle = slot.is_friendly ? "rgba(227,165,69,0.85)" : "rgba(229,96,79,0.85)";
     ctx.lineWidth = 2;
-    ctx.strokeRect(sx1, sy1, sw, sh);
+    ctx.setLineDash([5, 4]);
+    ctx.strokeRect(x1, y1, w, h);
+    ctx.setLineDash([]);
 
-    ctx.fillStyle = "rgba(0, 0, 0, 0.6)";
-    ctx.fillRect(sx1, Math.max(0, sy1 - 20), ctx.measureText(slot.name).width + 12, 18);
-
-    ctx.fillStyle = slot.is_friendly ? "#34d399" : "#fbbf24";
-    ctx.font = "12px sans-serif";
-    ctx.fillText(slot.name, sx1 + 6, Math.max(14, sy1 - 6));
+    ctx.font = '600 11px "IBM Plex Mono", monospace';
+    const tw = ctx.measureText(slot.name).width;
+    ctx.fillStyle = "rgba(20,18,12,0.85)";
+    ctx.fillRect(x1, Math.max(0, y1 - 17), tw + 10, 16);
+    ctx.fillStyle = "rgba(240,205,140,0.95)";
+    ctx.fillText(slot.name, x1 + 5, Math.max(11, y1 - 5));
   });
 }
 
-// Archive View
+// ============================================================================
+// ARCHIVE VIEW
+// ============================================================================
 let archiveOffset = 0;
 const ARCHIVE_LIMIT = 30;
 
@@ -934,27 +1078,13 @@ async function fetchArchiveSummary() {
     const res = await fetch("/api/archive/summary");
     if (!res.ok) return;
     const s = await res.json();
-    const container = document.getElementById("archive-summary");
-    container.innerHTML = `
-      <div class="summary-card">
-        <div class="summary-value">${s.total_analyzed || 0}</div>
-        <div class="summary-label">Total Clips</div>
-      </div>
-      <div class="summary-card">
-        <div class="summary-value" style="color: var(--accent-keep);">${s.kept_clips || 0}</div>
-        <div class="summary-label">Kept Events</div>
-      </div>
-      <div class="summary-card">
-        <div class="summary-value" style="color: var(--accent-discard);">${s.discarded_clips || 0}</div>
-        <div class="summary-label">Suppressed / Discarded</div>
-      </div>
-      <div class="summary-card">
-        <div class="summary-value" style="color: #38bdf8;">${s.reduction_percentage || 0}%</div>
-        <div class="summary-label">Nuisance Reduction</div>
-      </div>
-    `;
+    document.getElementById("archive-summary").innerHTML = `
+      <div class="summary-card"><div class="summary-value">${(s.total_analyzed || 0).toLocaleString()}</div><div class="summary-label">Clips scanned</div></div>
+      <div class="summary-card"><div class="summary-value" style="color:var(--ok)">${(s.kept_clips || 0).toLocaleString()}</div><div class="summary-label">Kept events</div></div>
+      <div class="summary-card"><div class="summary-value" style="color:var(--text-dim)">${(s.discarded_clips || 0).toLocaleString()}</div><div class="summary-label">Suppressed</div></div>
+      <div class="summary-card"><div class="summary-value" style="color:var(--accent)">${s.reduction_percentage || 0}%</div><div class="summary-label">Noise reduction</div></div>`;
   } catch (err) {
-    console.error("Archive summary error:", err);
+    console.error("archive summary error:", err);
   }
 }
 
@@ -964,10 +1094,7 @@ async function fetchArchiveList(offset = 0) {
   const camera = document.getElementById("archive-filter-camera").value;
   const reason = document.getElementById("archive-filter-reason").value;
 
-  const params = new URLSearchParams({
-    offset: offset.toString(),
-    limit: ARCHIVE_LIMIT.toString(),
-  });
+  const params = new URLSearchParams({ offset: offset.toString(), limit: ARCHIVE_LIMIT.toString() });
   if (verdict) params.set("verdict", verdict);
   if (camera) params.set("camera", camera);
   if (reason) params.set("reason", reason);
@@ -979,7 +1106,7 @@ async function fetchArchiveList(offset = 0) {
     renderArchiveGrid(data.items || []);
     renderPagination("archive-pagination", data.total || 0, offset, ARCHIVE_LIMIT, fetchArchiveList);
   } catch (err) {
-    console.error("Fetch archive error:", err);
+    console.error("fetch archive error:", err);
   }
 }
 
@@ -988,35 +1115,27 @@ function renderArchiveGrid(items) {
   grid.innerHTML = "";
 
   if (items.length === 0) {
-    grid.innerHTML = `<div style="grid-column: 1 / -1; text-align: center; color: var(--muted); padding: 40px;">No archive clips found</div>`;
+    grid.innerHTML = `<div class="empty" style="grid-column:1/-1;"><strong>Nothing here</strong>Adjust the filters to widen the search.</div>`;
     return;
   }
 
   items.forEach((item) => {
     const card = document.createElement("div");
     card.className = "archive-card";
-
     const isKeep = item.verdict === "KEEP";
-    const badgeColor = isKeep ? "var(--accent-keep)" : "var(--accent-discard)";
-    const thumbSrc = item.thumb_url || "/static/placeholder.jpg";
 
     card.innerHTML = `
-      <div class="card-thumb">
-        <img src="${thumbSrc}" alt="Clip ${item.idx}" loading="lazy">
+      <div class="card-thumb ${item.thumb_url ? "" : "no-thumb"}">
+        ${item.thumb_url ? `<img src="${item.thumb_url}" alt="Clip ${item.idx} thumbnail" loading="lazy">` : ""}
       </div>
       <div class="card-body">
         <div class="card-meta">
-          <span>${escapeHtml(item.camera || "Unknown")}</span>
-          <span style="font-weight: 700; color: ${badgeColor};">${item.verdict}</span>
+          <span class="card-cam">${escapeHtml(item.camera || "unknown")}</span>
+          <span class="${isKeep ? "verdict-keep" : "verdict-discard"}">${escapeHtml(item.verdict || "")}</span>
         </div>
-        <div style="font-size: 0.9rem; font-weight: 600; margin-bottom: 4px;">
-          ${escapeHtml(item.primary_reason || item.reason || "")}
-        </div>
-        <div style="font-size: 0.75rem; color: var(--muted);">
-          Confidence: ${Math.round((item.confidence || 0) * 100)}%
-        </div>
-      </div>
-    `;
+        <div style="font-size:0.86rem;font-weight:600;">${escapeHtml(item.primary_reason || item.reason || "")}</div>
+        <div class="card-meta"><span>confidence</span><span class="mono">${Math.round((item.confidence || 0) * 100)}%</span></div>
+      </div>`;
 
     card.onclick = () => openArchiveModal(item);
     grid.appendChild(card);
@@ -1025,24 +1144,22 @@ function renderArchiveGrid(items) {
 
 function openArchiveModal(item) {
   const modal = document.getElementById("modal");
-  const modalBody = document.getElementById("modal-body");
+  const body = document.getElementById("modal-body");
 
-  let videoHtml = "";
-  if (item.clip_url) {
-    videoHtml = `<video controls autoplay style="width: 100%; max-height: 480px; background: #000; border-radius: 6px;" src="${item.clip_url}"></video>`;
-  } else {
-    videoHtml = `<div style="text-align: center; padding: 40px; color: var(--muted);">Clip video file not accessible</div>`;
-  }
+  const videoHtml = item.clip_url
+    ? `<video controls autoplay muted style="width:100%;max-height:480px;background:#05070a;border-radius:10px;" src="${item.clip_url}"></video>`
+    : `<div class="empty" style="height:200px;display:grid;place-content:center;"><strong>Clip unavailable</strong>The file is not accessible from this server.</div>`;
 
-  modalBody.innerHTML = `
-    <h3 style="margin-bottom: 8px;">${escapeHtml(item.camera || "Archive Clip")}</h3>
-    <div style="color: var(--muted); font-size: 0.85rem; margin-bottom: 14px;">Verdict: <strong>${item.verdict}</strong> &bull; Reason: ${escapeHtml(item.primary_reason || item.reason || "")}</div>
-    ${videoHtml}
-  `;
+  body.innerHTML = `
+    <div class="eyebrow">${escapeHtml(item.camera || "archive")} · ${escapeHtml(item.verdict || "")}</div>
+    <h2 style="margin:4px 0 12px;">${escapeHtml(item.primary_reason || item.reason || "clip")}</h2>
+    ${videoHtml}`;
   modal.classList.remove("hidden");
 }
 
-// Pagination Component
+// ============================================================================
+// Pagination
+// ============================================================================
 function renderPagination(containerId, total, currentOffset, limit, onPage) {
   const bar = document.getElementById(containerId);
   bar.innerHTML = "";
@@ -1052,29 +1169,30 @@ function renderPagination(containerId, total, currentOffset, limit, onPage) {
   const currentPage = Math.floor(currentOffset / limit) + 1;
 
   if (currentPage > 1) {
-    const prevBtn = document.createElement("button");
-    prevBtn.className = "btn btn-outline btn-sm";
-    prevBtn.textContent = "Previous";
-    prevBtn.onclick = () => onPage((currentPage - 2) * limit);
-    bar.appendChild(prevBtn);
+    const prev = document.createElement("button");
+    prev.className = "btn btn-ghost btn-sm";
+    prev.textContent = "← Newer";
+    prev.onclick = () => onPage((currentPage - 2) * limit);
+    bar.appendChild(prev);
   }
 
-  const pageInfo = document.createElement("span");
-  pageInfo.style.alignSelf = "center";
-  pageInfo.style.fontSize = "0.85rem";
-  pageInfo.textContent = `Page ${currentPage} of ${totalPages} (${total} total)`;
-  bar.appendChild(pageInfo);
+  const info = document.createElement("span");
+  info.className = "mono";
+  info.textContent = `${currentPage} / ${totalPages} · ${total} total`;
+  bar.appendChild(info);
 
   if (currentPage < totalPages) {
-    const nextBtn = document.createElement("button");
-    nextBtn.className = "btn btn-outline btn-sm";
-    nextBtn.textContent = "Next";
-    nextBtn.onclick = () => onPage(currentPage * limit);
-    bar.appendChild(nextBtn);
+    const next = document.createElement("button");
+    next.className = "btn btn-ghost btn-sm";
+    next.textContent = "Older →";
+    next.onclick = () => onPage(currentPage * limit);
+    bar.appendChild(next);
   }
 }
 
+// ============================================================================
 // Helpers
+// ============================================================================
 function escapeHtml(text) {
   if (text === null || text === undefined) return "";
   return String(text)
@@ -1085,40 +1203,31 @@ function escapeHtml(text) {
     .replace(/'/g, "&#039;");
 }
 
-// Initialization & Event Listeners
+// ============================================================================
+// Boot
+// ============================================================================
 document.addEventListener("DOMContentLoaded", () => {
   initRouter();
   initSSE();
+  initClock();
 
-  // Modal close
   document.getElementById("modal-close").onclick = closeModal;
   document.getElementById("modal-backdrop").onclick = closeModal;
 
-  // Browser notifications button
   document.getElementById("btn-browser-notifications").onclick = async () => {
     if ("Notification" in window) {
       const perm = await Notification.requestPermission();
-      if (perm === "granted") {
-        showToast("Enabled", "Browser notifications are enabled!");
-      }
+      if (perm === "granted") showToast("Alerts enabled", "Desktop notifications are on.");
     }
   };
-  // Toggle Client Overlays button
-  const toggleBoxesBtn = document.getElementById("btn-toggle-client-boxes");
-  if (toggleBoxesBtn) {
-    toggleBoxesBtn.onclick = () => {
-      showClientOverlays = !showClientOverlays;
-      toggleBoxesBtn.textContent = `Toggle Overlays (${showClientOverlays ? "ON" : "OFF"})`;
-      document.querySelectorAll(".camera-tile").forEach((tile) => {
-        const canvas = tile.querySelector(".camera-live-overlay");
-        if (canvas && !showClientOverlays) {
-          const ctx = canvas.getContext("2d");
-          ctx.clearRect(0, 0, canvas.width, canvas.height);
-        }
-      });
-    };
-  }
 
+  // Overlay toggle
+  const toggleBoxesBtn = document.getElementById("btn-toggle-client-boxes");
+  toggleBoxesBtn.onclick = () => {
+    showClientOverlays = !showClientOverlays;
+    toggleBoxesBtn.textContent = `Boxes ${showClientOverlays ? "ON" : "OFF"}`;
+    drawAllOverlays();
+  };
 
   // Event filters
   document.getElementById("event-filter-apply").onclick = () => fetchEvents(0);
@@ -1139,11 +1248,10 @@ document.addEventListener("DOMContentLoaded", () => {
     fetchArchiveList(0);
   };
 
-  // Create Identity button
+  // New identity
   document.getElementById("btn-new-identity").onclick = async () => {
-    const name = prompt("Enter name for new identity:");
+    const name = prompt("Name for the new identity:");
     if (!name || !name.trim()) return;
-
     try {
       const res = await fetch("/api/identities", {
         method: "POST",
@@ -1151,14 +1259,21 @@ document.addEventListener("DOMContentLoaded", () => {
         body: JSON.stringify({ name: name.trim() }),
       });
       if (res.ok) {
-        showToast("Created", `Identity '${name}' created`);
+        showToast("Identity created", name.trim());
         loadFacesView();
       } else {
         const err = await res.json();
-        alert(`Failed to create identity: ${err.detail || "Error"}`);
+        showToast("Create failed", err.detail || "Error");
       }
     } catch (err) {
-      alert(`Error creating identity: ${err}`);
+      showToast("Create error", String(err));
     }
   };
+
+  // Re-layout canvases on resize
+  let rT;
+  window.addEventListener("resize", () => {
+    clearTimeout(rT);
+    rT = setTimeout(drawAllOverlays, 120);
+  });
 });
