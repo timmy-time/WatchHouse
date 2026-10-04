@@ -35,6 +35,45 @@ def _resolve_tracker_config(cfg: LiveConfig) -> str:
     return "bytetrack.yaml"
 
 
+def _track_velocity(track, frame_w: int, frame_h: int) -> "tuple[float, float]":
+    """Normalized screen velocity (units/s) from the track's recent window.
+
+    Uses the newest observation and the oldest one at least 0.2 s older, so the
+    estimate is stable enough for client-side box prediction.
+    """
+    window = list(track.window)
+    if len(window) < 2 or frame_w <= 0 or frame_h <= 0:
+        return 0.0, 0.0
+
+    t_last, d_last = window[-1]
+    ref = None
+    for t, d in reversed(window[:-1]):
+        if t_last - t >= 0.2:
+            ref = (t, d)
+            break
+    if ref is None:
+        return 0.0, 0.0
+
+    t0, d0 = ref
+    dt = t_last - t0
+    if dt <= 1e-3:
+        return 0.0, 0.0
+
+    cx0 = (d0.bbox_xyxy[0] + d0.bbox_xyxy[2]) / 2.0 / frame_w
+    cy0 = (d0.bbox_xyxy[1] + d0.bbox_xyxy[3]) / 2.0 / frame_h
+    cx1 = (d_last.bbox_xyxy[0] + d_last.bbox_xyxy[2]) / 2.0 / frame_w
+    cy1 = (d_last.bbox_xyxy[1] + d_last.bbox_xyxy[3]) / 2.0 / frame_h
+
+    vx = (cx1 - cx0) / dt
+    vy = (cy1 - cy0) / dt
+
+    # Clamp absurd values (track ID swaps) to a plausible screen speed
+    limit = 3.0
+    vx = max(-limit, min(limit, vx))
+    vy = max(-limit, min(limit, vy))
+    return round(vx, 3), round(vy, 3)
+
+
 class CameraWorker(threading.Thread):
     """Worker thread running RTSP ingest, YOLO ByteTrack, and behavior/face logic for one camera."""
 
@@ -65,6 +104,9 @@ class CameraWorker(threading.Thread):
         self.fps_analyzed = 0.0
         self.last_frame_at = 0.0
         self.last_verify_push = 0.0
+        self.detections_dir = os.path.join(output_dir, "live", "detections")
+        os.makedirs(self.detections_dir, exist_ok=True)
+        self.last_det_write = 0.0
         self.fps_controller = DynamicFpsController(cfg.analysis.dynamic_fps)
         self.current_detections: List[Dict[str, Any]] = []
 
@@ -90,6 +132,33 @@ class CameraWorker(threading.Thread):
             on_closed=self.finalizer.enqueue,
             scenery=scenery,
         )
+
+    def _write_detections_file(self, now: float, frame_w: int, frame_h: int) -> None:
+        """Publish current boxes + velocity for the dashboard at ~4 Hz.
+
+        Separate from status.json so the client can poll quickly and predict box
+        positions between updates without paying the full status payload cost.
+        """
+        if now - self.last_det_write < 0.25:
+            return
+        self.last_det_write = now
+
+        payload = {
+            "camera": self.cam.name,
+            "updated_at": now,
+            "frame_w": frame_w,
+            "frame_h": frame_h,
+            "source": "sub" if (self.cam.sub_url and not self.stream.sub_failed) else "main",
+            "detections": self.current_detections,
+        }
+        path = os.path.join(self.detections_dir, f"{self.cam.slug}.json")
+        tmp = path + ".tmp"
+        try:
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(payload, f)
+            os.replace(tmp, path)
+        except Exception as exc:
+            logger.debug(f"{self.cam.name}: detections write failed: {exc}")
 
     def run(self) -> None:
         logger.info(f"{self.cam.name}: Starting camera worker on GPU {self.cam.gpu}")
@@ -128,8 +197,18 @@ class CameraWorker(threading.Thread):
                         conf_threshold=self.cfg.analysis.confidence,
                     )
                     frame_idx += 1
-                    self.current_detections = [
-                        {
+
+                    # name -> global vehicle id (for cross-camera labelling)
+                    slot_vehicle = {}
+                    if self.scenery is not None:
+                        for s in self.scenery.get_slots(self.cam.name):
+                            if s.vehicle_id is not None:
+                                slot_vehicle[s.name] = s.vehicle_id
+
+                    self.current_detections = []
+                    for d in dets:
+                        track = self.manager.tracks.get(d.track_id)
+                        self.current_detections.append({
                             "class_name": d.class_name,
                             "track_id": d.track_id,
                             "conf": round(d.confidence, 2),
@@ -139,19 +218,12 @@ class CameraWorker(threading.Thread):
                                 round(d.bbox_xyxy[2] / frame_w, 3),
                                 round(d.bbox_xyxy[3] / frame_h, 3),
                             ],
-                            "anchored_name": (
-                                self.manager.tracks[d.track_id].anchored_slot_name
-                                if d.track_id in self.manager.tracks
-                                else None
-                            ),
-                            "is_anchored": (
-                                self.manager.tracks[d.track_id].is_anchored
-                                if d.track_id in self.manager.tracks
-                                else False
-                            ),
-                        }
-                        for d in dets
-                    ]
+                            "vel": _track_velocity(track, frame_w, frame_h) if track else (0.0, 0.0),
+                            "anchored_name": track.anchored_slot_name if track else None,
+                            "vehicle_id": slot_vehicle.get(track.anchored_slot_name) if track and track.anchored_slot_name else None,
+                            "is_anchored": track.is_anchored if track else False,
+                        })
+                    self._write_detections_file(t, frame_w, frame_h)
 
                     self.manager.process(
                         frame=frame,

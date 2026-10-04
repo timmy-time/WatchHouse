@@ -35,6 +35,7 @@ function handleRoute() {
   if (!inLive) {
     if (statusInterval) { clearInterval(statusInterval); statusInterval = null; }
     if (detectionsInterval) { clearInterval(detectionsInterval); detectionsInterval = null; }
+    stopOverlayLoop();
   }
 
   document.querySelectorAll(".nav-link").forEach((link) => {
@@ -128,8 +129,9 @@ async function loadLiveView() {
   await pollLiveDetections();
   await prefillFeed();
 
+  startOverlayLoop();
   if (!statusInterval) statusInterval = setInterval(fetchLiveStatus, 5000);
-  if (!detectionsInterval) detectionsInterval = setInterval(pollLiveDetections, 1000);
+  if (!detectionsInterval) detectionsInterval = setInterval(pollLiveDetections, 250);
 }
 
 // --- system chips in the top bar ---
@@ -291,7 +293,38 @@ function camListByName(cameras) {
   return map;
 }
 
-// --- detections polling + overlays ---
+// --- detections polling + predicted overlay rendering ---
+let overlayRaf = null;
+let lastOverlayDraw = 0;
+const renderedBoxes = new Map(); // "slug:track_id" -> {x1,y1,x2,y2,lastSeen}
+
+function startOverlayLoop() {
+  if (overlayRaf === null) overlayRaf = requestAnimationFrame(overlayTick);
+}
+
+function stopOverlayLoop() {
+  if (overlayRaf !== null) cancelAnimationFrame(overlayRaf);
+  overlayRaf = null;
+}
+
+function overlayTick(ts) {
+  overlayRaf = requestAnimationFrame(overlayTick);
+  if (ts - lastOverlayDraw < 33) return; // ~30 fps is plenty and keeps CPU low
+  lastOverlayDraw = ts;
+  if (document.getElementById("view-live").classList.contains("hidden")) return;
+
+  // Use the Unix clock: detection timestamps come from the server in epoch seconds
+  const nowSec = Date.now() / 1000;
+  drawAllOverlays(nowSec);
+  pruneRenderedBoxes(nowSec);
+}
+
+function pruneRenderedBoxes(now) {
+  for (const [key, st] of renderedBoxes) {
+    if (now - st.lastSeen > 2.5) renderedBoxes.delete(key);
+  }
+}
+
 async function pollLiveDetections() {
   if (document.getElementById("view-live").classList.contains("hidden")) return;
   const cams = Object.values(liveCameras);
@@ -301,12 +334,11 @@ async function pollLiveDetections() {
       if (r.ok) liveDetections[cam.slug] = await r.json();
     } catch (_) { /* ignore transient errors */ }
   }));
-  drawAllOverlays();
 }
 
-function drawAllOverlays() {
+function drawAllOverlays(now = Date.now() / 1000) {
   document.querySelectorAll(".cam-tile").forEach((tile) => {
-    drawTileOverlay(tile, liveDetections[tile.dataset.slug]);
+    drawTileOverlay(tile, liveDetections[tile.dataset.slug], now);
   });
 }
 
@@ -314,7 +346,7 @@ function drawAllOverlays() {
  * Letterbox-correct overlay. The <img> uses object-fit: contain, so boxes must
  * be mapped into the *rendered image rect*, not the raw canvas rect.
  */
-function drawTileOverlay(tile, data) {
+function drawTileOverlay(tile, data, now = Date.now() / 1000) {
   const media = tile.querySelector(".cam-media");
   const canvas = tile.querySelector(".camera-live-overlay");
   const img = tile.querySelector(".cam-media img");
@@ -378,12 +410,39 @@ function drawTileOverlay(tile, data) {
     if (isHero) drawPill(ctx, s.name, x1, y1 - 4, "#2a2416", "rgba(240,205,140,0.95)", fs - 1);
   });
 
-  // 3. Detections
+  // 3. Detections — extrapolated with per-track velocity between polls and
+  //    smoothed toward each new measurement so boxes glide instead of jumping.
+  const dataAge = Math.max(0, now - (data.updated_at || now));
+  const coast = Math.min(dataAge, 0.6); // seconds of forward prediction
+  const slug = tile.dataset.slug;
+
   (data.detections || []).forEach((d) => {
     const b = d.box_norm || [];
     if (b.length !== 4) return;
-    const [x1, y1] = px([b[0], b[1]]);
-    const [x2, y2] = px([b[2], b[3]]);
+
+    const vel = d.vel || [0, 0];
+    // Predicted target in normalized units
+    const tx1 = b[0] + vel[0] * coast;
+    const ty1 = b[1] + vel[1] * coast;
+    const tx2 = b[2] + vel[0] * coast;
+    const ty2 = b[3] + vel[1] * coast;
+
+    const key = `${slug}:${d.track_id !== undefined ? d.track_id : `${b[0]},${b[1]}`}`;
+    let st = renderedBoxes.get(key);
+    if (!st) {
+      st = { x1: tx1, y1: ty1, x2: tx2, y2: ty2, lastSeen: now };
+      renderedBoxes.set(key, st);
+    } else {
+      const a = 0.35; // EMA correction rate
+      st.x1 += (tx1 - st.x1) * a;
+      st.y1 += (ty1 - st.y1) * a;
+      st.x2 += (tx2 - st.x2) * a;
+      st.y2 += (ty2 - st.y2) * a;
+      st.lastSeen = now;
+    }
+
+    const [x1, y1] = px([st.x1, st.y1]);
+    const [x2, y2] = px([st.x2, st.y2]);
     const w = x2 - x1;
     const h = y2 - y1;
 
@@ -825,8 +884,107 @@ let drawStartX = 0;
 let drawStartY = 0;
 
 async function loadSceneryView() {
+  await fetchVehicles();          // vehicles first: slot cards need them for linking
   await populateSceneryCameras();
   initSceneryCanvas();
+}
+
+let liveVehicles = [];
+
+async function fetchVehicles() {
+  try {
+    const res = await fetch("/api/vehicles");
+    liveVehicles = await res.json();
+    renderVehicles(liveVehicles);
+    syncVehicleDatalist(liveVehicles);
+  } catch (err) {
+    console.error("fetch vehicles error:", err);
+  }
+}
+
+function syncVehicleDatalist(vehicles) {
+  let dl = document.getElementById("vehicles-datalist");
+  if (!dl) {
+    dl = document.createElement("datalist");
+    dl.id = "vehicles-datalist";
+    document.body.appendChild(dl);
+  }
+  dl.innerHTML = vehicles.map((v) => `<option value="${escapeHtml(v.name)}"></option>`).join("");
+  const nameInput = document.getElementById("slot-name-input");
+  if (nameInput) {
+    nameInput.setAttribute("list", "vehicles-datalist");
+    nameInput.placeholder = "pick an existing vehicle or type a new name";
+  }
+}
+
+function timeAgo(ts) {
+  if (!ts) return "—";
+  const s = Math.max(0, Date.now() / 1000 - ts);
+  if (s < 90) return `${Math.round(s)}s ago`;
+  if (s < 5400) return `${Math.round(s / 60)}m ago`;
+  return `${Math.round(s / 3600)}h ago`;
+}
+
+function renderVehicles(vehicles) {
+  const host = document.getElementById("vehicles-list");
+  if (!host) return;
+  host.innerHTML = "";
+
+  if (vehicles.length === 0) {
+    host.innerHTML = `<div class="empty"><strong>No vehicles yet</strong>Create a slot to register a vehicle.</div>`;
+    return;
+  }
+
+  vehicles.forEach((v) => {
+    const row = document.createElement("div");
+    row.className = "feed-item";
+
+    const camChips = (v.cameras || [])
+      .map((c) => `<span class="chip chip-accent">${escapeHtml(c)}</span>`)
+      .join(" ") || `<span class="chip">no camera yet</span>`;
+
+    const slotLines = (v.slots || []).map((s) => {
+      const when = (v.sightings || []).find((x) => x.camera === s.camera);
+      const seen = when ? `${when.hits} hits · ${timeAgo(when.last_seen)}` : "not seen yet";
+      return `<div class="feed-meta"><span>${escapeHtml(s.camera)}</span><span class="mono">${seen}</span></div>`;
+    }).join("");
+
+    row.innerHTML = `
+      <div class="feed-meta">
+        <span class="feed-cam">${escapeHtml(v.name)}</span>
+        <span class="mono">${escapeHtml(v.color_name || "")}</span>
+      </div>
+      <div class="feed-chips" style="margin-bottom:6px;">${camChips}</div>
+      ${slotLines}
+      <div style="display:flex;gap:6px;margin-top:8px;">
+        <button class="btn btn-ghost btn-xs btn-veh-rename">Rename</button>
+        <button class="btn btn-danger btn-xs btn-veh-delete" style="margin-left:auto;">Delete</button>
+      </div>`;
+
+    row.querySelector(".btn-veh-rename").onclick = async () => {
+      const name = prompt("Vehicle name (slots on every camera follow this name):", v.name);
+      if (!name || !name.trim() || name.trim() === v.name) return;
+      try {
+        const res = await fetch(`/api/vehicles/${v.id}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ name: name.trim() }),
+        });
+        if (res.ok) { showToast("Vehicle renamed", name.trim()); fetchVehicles(); fetchScenerySlots(); }
+        else showToast("Rename failed", "Name may already exist");
+      } catch (err) { showToast("Rename error", String(err)); }
+    };
+
+    row.querySelector(".btn-veh-delete").onclick = async () => {
+      if (!confirm(`Delete vehicle "${v.name}"? Its slots stay but become unlinked.`)) return;
+      try {
+        const res = await fetch(`/api/vehicles/${v.id}`, { method: "DELETE" });
+        if (res.ok) { showToast("Vehicle deleted", v.name); fetchVehicles(); fetchScenerySlots(); }
+      } catch (err) { showToast("Delete error", String(err)); }
+    };
+
+    host.appendChild(row);
+  });
 }
 
 async function populateSceneryCameras() {
@@ -902,6 +1060,13 @@ function renderScenerySlots(slots) {
     row.className = "feed-item";
     const boxStr = Array.isArray(s.slot_box) ? s.slot_box.map((v) => (typeof v === "number" ? v.toFixed(2) : v)).join(", ") : "";
 
+    const options = [
+      `<option value="">— unlinked —</option>`,
+      ...liveVehicles.map((v) =>
+        `<option value="${v.id}" ${s.vehicle_id === v.id ? "selected" : ""}>${escapeHtml(v.name)}</option>`
+      ),
+    ].join("");
+
     row.innerHTML = `
       <div class="feed-meta">
         <span class="feed-cam">${escapeHtml(s.name)}</span>
@@ -911,10 +1076,35 @@ function renderScenerySlots(slots) {
         <span class="chip">${escapeHtml(s.color_name || "unknown")}</span>
         <span class="chip mono">[${boxStr}]</span>
       </div>
+      <div class="field" style="margin-bottom:6px;">
+        <label>Vehicle (cross-camera)</label>
+        <select class="form-control js-vehicle-link" style="width:100%;">${options}</select>
+      </div>
       <div style="display:flex;gap:6px;">
         <button class="btn btn-ghost btn-xs btn-toggle-friendly">${s.is_friendly ? "Mark alert" : "Mark friendly"}</button>
         <button class="btn btn-danger btn-xs btn-delete-slot" style="margin-left:auto;">Delete</button>
       </div>`;
+
+    row.querySelector(".js-vehicle-link").onchange = async (e) => {
+      const val = e.target.value;
+      const vehicle_id = val === "" ? null : parseInt(val, 10);
+      try {
+        const res = await fetch(`/api/scenery/slots/${s.id}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ vehicle_id }),
+        });
+        if (res.ok) {
+          showToast("Slot linked", vehicle_id === null ? "Unlinked" : "Vehicle updated");
+          fetchScenerySlots();
+          fetchVehicles();
+        } else {
+          showToast("Link failed", "Vehicle not found");
+        }
+      } catch (err) {
+        showToast("Link error", String(err));
+      }
+    };
 
     row.querySelector(".btn-toggle-friendly").onclick = async () => {
       try {
@@ -1035,6 +1225,7 @@ function initSceneryCanvas() {
           showToast("Slot saved", name);
           document.getElementById("slot-name-input").value = "";
           fetchScenerySlots();
+          fetchVehicles();
         } else {
           const err = await res.json();
           showToast("Save failed", err.detail || "Error");
@@ -1240,6 +1431,12 @@ document.addEventListener("DOMContentLoaded", () => {
     toggleBoxesBtn.textContent = `Boxes ${showClientOverlays ? "ON" : "OFF"}`;
     drawAllOverlays();
   };
+
+  // Vehicles refresh (scenery view)
+  const refreshVehiclesBtn = document.getElementById("btn-refresh-vehicles");
+  if (refreshVehiclesBtn) {
+    refreshVehiclesBtn.onclick = () => { fetchVehicles(); fetchScenerySlots(); };
+  }
 
   // Event filters
   document.getElementById("event-filter-apply").onclick = () => fetchEvents(0);

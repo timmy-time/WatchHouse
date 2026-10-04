@@ -92,12 +92,68 @@ class EventStore:
                 appearance_sig TEXT NOT NULL,
                 is_friendly INTEGER NOT NULL DEFAULT 1,
                 created_at REAL NOT NULL,
-                updated_at REAL NOT NULL
+                updated_at REAL NOT NULL,
+                vehicle_id INTEGER
             );
             CREATE INDEX IF NOT EXISTS idx_slots_camera ON vehicle_slots(camera);
+
+            CREATE TABLE IF NOT EXISTS vehicles(
+                id INTEGER PRIMARY KEY,
+                name TEXT NOT NULL UNIQUE,
+                color_name TEXT NOT NULL DEFAULT '',
+                created_at REAL NOT NULL,
+                updated_at REAL NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS vehicle_sightings(
+                id INTEGER PRIMARY KEY,
+                vehicle_id INTEGER NOT NULL,
+                camera TEXT NOT NULL,
+                first_seen REAL NOT NULL,
+                last_seen REAL NOT NULL,
+                hits INTEGER NOT NULL DEFAULT 1,
+                UNIQUE(vehicle_id, camera)
+            );
+            CREATE INDEX IF NOT EXISTS idx_sightings_vehicle ON vehicle_sightings(vehicle_id);
             """
         )
         self.conn.commit()
+        self._migrate_vehicle_links()
+
+    def _migrate_vehicle_links(self) -> None:
+        """Add vehicle_id to pre-existing slot tables and link legacy slots by name."""
+        with self.lock:
+            cols = {r["name"] for r in self.conn.execute("PRAGMA table_info(vehicle_slots)").fetchall()}
+            if "vehicle_id" not in cols:
+                self.conn.execute("ALTER TABLE vehicle_slots ADD COLUMN vehicle_id INTEGER")
+                self.conn.commit()
+
+            # Link any slot that has no vehicle yet: one global vehicle per distinct name.
+            orphans = self.conn.execute(
+                "SELECT DISTINCT name FROM vehicle_slots WHERE vehicle_id IS NULL"
+            ).fetchall()
+            if not orphans:
+                return
+
+            now = time.time()
+            for row in orphans:
+                name = row["name"]
+                existing = self.conn.execute(
+                    "SELECT id FROM vehicles WHERE name = ?", (name,)
+                ).fetchone()
+                if existing:
+                    vid = existing["id"]
+                else:
+                    cur = self.conn.execute(
+                        "INSERT INTO vehicles (name, color_name, created_at, updated_at) VALUES (?, '', ?, ?)",
+                        (name, now, now),
+                    )
+                    vid = cur.lastrowid
+                self.conn.execute(
+                    "UPDATE vehicle_slots SET vehicle_id = ? WHERE vehicle_id IS NULL AND name = ?",
+                    (vid, name),
+                )
+            self.conn.commit()
 
     # --- Events ---
 
@@ -500,3 +556,123 @@ class EventStore:
             cur = self.conn.execute("SELECT * FROM vehicle_slots WHERE id = ?", (slot_id,))
             row = cur.fetchone()
             return dict(row) if row else None
+
+    # --- Global vehicles (cross-camera identity) ---
+
+    def list_vehicles(self) -> List[Dict[str, Any]]:
+        """All vehicles with their per-camera slots and cross-camera sightings."""
+        with self.lock:
+            vehicles = [dict(r) for r in self.conn.execute(
+                "SELECT * FROM vehicles ORDER BY name ASC"
+            ).fetchall()]
+            slots = [dict(r) for r in self.conn.execute(
+                "SELECT id, camera, name, vehicle_id, is_friendly FROM vehicle_slots"
+            ).fetchall()]
+            sightings = [dict(r) for r in self.conn.execute(
+                "SELECT vehicle_id, camera, first_seen, last_seen, hits FROM vehicle_sightings"
+            ).fetchall()]
+
+        slots_by_vehicle: Dict[int, List[Dict[str, Any]]] = {}
+        for s in slots:
+            if s["vehicle_id"] is not None:
+                slots_by_vehicle.setdefault(s["vehicle_id"], []).append(s)
+
+        sightings_by_vehicle: Dict[int, List[Dict[str, Any]]] = {}
+        for s in sightings:
+            sightings_by_vehicle.setdefault(s["vehicle_id"], []).append(s)
+
+        for v in vehicles:
+            v["slots"] = slots_by_vehicle.get(v["id"], [])
+            v["cameras"] = sorted({s["camera"] for s in v["slots"]} |
+                                  {s["camera"] for s in sightings_by_vehicle.get(v["id"], [])})
+            v["sightings"] = sorted(
+                sightings_by_vehicle.get(v["id"], []),
+                key=lambda s: s["last_seen"], reverse=True,
+            )
+        return vehicles
+
+    def get_vehicle(self, vehicle_id: int) -> Optional[Dict[str, Any]]:
+        with self.lock:
+            row = self.conn.execute("SELECT * FROM vehicles WHERE id = ?", (vehicle_id,)).fetchone()
+            return dict(row) if row else None
+
+    def create_vehicle(self, name: str, color_name: str = "") -> int:
+        now = time.time()
+        with self.lock:
+            cur = self.conn.execute(
+                "INSERT INTO vehicles (name, color_name, created_at, updated_at) VALUES (?, ?, ?, ?)",
+                (name, color_name, now, now),
+            )
+            self.conn.commit()
+            return cur.lastrowid
+
+    def get_or_create_vehicle(self, name: str, color_name: str = "") -> int:
+        with self.lock:
+            row = self.conn.execute("SELECT id FROM vehicles WHERE name = ?", (name,)).fetchone()
+            if row:
+                return row["id"]
+        return self.create_vehicle(name, color_name)
+
+    def rename_vehicle(self, vehicle_id: int, name: str) -> None:
+        """Rename a vehicle and keep its slot labels in sync."""
+        now = time.time()
+        with self.lock:
+            self.conn.execute(
+                "UPDATE vehicles SET name = ?, updated_at = ? WHERE id = ?", (name, now, vehicle_id)
+            )
+            self.conn.execute(
+                "UPDATE vehicle_slots SET name = ?, updated_at = ? WHERE vehicle_id = ?",
+                (name, now, vehicle_id),
+            )
+            self.conn.commit()
+
+    def delete_vehicle(self, vehicle_id: int) -> bool:
+        """Delete a vehicle; its slots survive unlinked."""
+        with self.lock:
+            cur = self.conn.execute("DELETE FROM vehicles WHERE id = ?", (vehicle_id,))
+            if cur.rowcount == 0:
+                self.conn.commit()
+                return False
+            self.conn.execute("UPDATE vehicle_slots SET vehicle_id = NULL WHERE vehicle_id = ?", (vehicle_id,))
+            self.conn.execute("DELETE FROM vehicle_sightings WHERE vehicle_id = ?", (vehicle_id,))
+            self.conn.commit()
+            return True
+
+    def link_slot_vehicle(self, slot_id: int, vehicle_id: Optional[int]) -> bool:
+        """Link (or unlink) a slot to a global vehicle; slot label mirrors the vehicle name."""
+        now = time.time()
+        with self.lock:
+            slot = self.conn.execute("SELECT id FROM vehicle_slots WHERE id = ?", (slot_id,)).fetchone()
+            if not slot:
+                return False
+            if vehicle_id is None:
+                self.conn.execute(
+                    "UPDATE vehicle_slots SET vehicle_id = NULL, updated_at = ? WHERE id = ?",
+                    (now, slot_id),
+                )
+            else:
+                veh = self.conn.execute("SELECT name FROM vehicles WHERE id = ?", (vehicle_id,)).fetchone()
+                if not veh:
+                    return False
+                self.conn.execute(
+                    "UPDATE vehicle_slots SET vehicle_id = ?, name = ?, updated_at = ? WHERE id = ?",
+                    (vehicle_id, veh["name"], now, slot_id),
+                )
+            self.conn.commit()
+            return True
+
+    def record_sighting(self, vehicle_id: int, camera: str) -> None:
+        """Upsert a cross-camera sighting counter for a vehicle."""
+        now = time.time()
+        with self.lock:
+            self.conn.execute(
+                """
+                INSERT INTO vehicle_sightings (vehicle_id, camera, first_seen, last_seen, hits)
+                VALUES (?, ?, ?, ?, 1)
+                ON CONFLICT(vehicle_id, camera) DO UPDATE SET
+                    last_seen = excluded.last_seen,
+                    hits = vehicle_sightings.hits + 1
+                """,
+                (vehicle_id, camera, now, now),
+            )
+            self.conn.commit()

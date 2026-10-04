@@ -91,11 +91,19 @@ class SlotCreate(BaseModel):
     slot_box: List[float]  # [x1, y1, x2, y2] normalized
     is_friendly: bool = True
     color_name: Optional[str] = None
+    vehicle_id: Optional[int] = None       # link to an existing global vehicle
+    vehicle_name: Optional[str] = None     # or create/reuse by name
 
 
 class SlotUpdate(BaseModel):
     name: Optional[str] = None
     is_friendly: Optional[bool] = None
+    vehicle_id: Optional[int] = None  # set to link; explicitly null to unlink
+
+
+class VehicleCreate(BaseModel):
+    name: str
+    color_name: Optional[str] = ""
 
 def create_app(output_dir: str, clips_dir: str, config_path: str) -> FastAPI:
     """Create and configure FastAPI application for CCTV dashboard."""
@@ -291,51 +299,85 @@ def create_app(output_dir: str, clips_dir: str, config_path: str) -> FastAPI:
 
     @app.get("/api/live/{slug}/detections")
     async def live_camera_detections(slug: str):
+        """Boxes + velocity for one camera (fast path), enriched with zones and slots."""
+        cam_name = slug
+        detections = []
+        updated_at = None
+        source = None
+        open_event_id = None
+        mode = None
+
+        # Fast path: per-camera detections file written by the worker at ~4 Hz
+        det_file = os.path.join(output_dir, f"live/detections/{slug}.json")
+        if os.path.exists(det_file):
+            try:
+                with open(det_file, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                # Ignore files left over from a previous run
+                if data.get("updated_at") and (time.time() - float(data["updated_at"])) < 5.0:
+                    cam_name = data.get("camera", slug)
+                    detections = data.get("detections", [])
+                    updated_at = data.get("updated_at")
+                    source = data.get("source")
+            except Exception:
+                pass
+
+        # Status adds event/mode + is the fallback box source
         status_file = os.path.join(output_dir, "live/status.json")
         if os.path.exists(status_file):
             try:
                 with open(status_file, "r", encoding="utf-8") as f:
-                    data = json.load(f)
-                for cam_name, cam_info in data.get("cameras", {}).items():
-                    if cam_info.get("slug") == slug:
-                        zones = []
-                        cfg = get_live_cfg()
-                        if cfg is not None:
-                            for c in cfg.cameras:
-                                if c.name == cam_name:
-                                    zones = [
-                                        {
-                                            "name": z.name,
-                                            "type": z.type,
-                                            "polygon": [[float(x), float(y)] for (x, y) in z.polygon],
-                                        }
-                                        for z in c.zones
-                                    ]
-                                    break
-
-                        slots = []
-                        for s in store.list_vehicle_slots(camera=cam_name):
-                            try:
-                                slots.append({
-                                    "name": s["name"],
-                                    "slot_box": json.loads(s["slot_box"]),
-                                    "is_friendly": bool(s["is_friendly"]),
-                                })
-                            except Exception:
-                                continue
-
-                        return {
-                            "camera": cam_name,
-                            "slug": slug,
-                            "detections": cam_info.get("detections", []),
-                            "zones": zones,
-                            "slots": slots,
-                            "open_event_id": cam_info.get("open_event_id"),
-                            "mode": cam_info.get("mode", "idle"),
-                        }
+                    status = json.load(f)
+                for name, info in status.get("cameras", {}).items():
+                    if info.get("slug") == slug:
+                        cam_name = name
+                        open_event_id = info.get("open_event_id")
+                        mode = info.get("mode", "idle")
+                        if not detections:
+                            detections = info.get("detections", [])
+                            updated_at = status.get("updated_at")
+                        break
             except Exception:
                 pass
-        return {"camera": slug, "detections": [], "zones": [], "slots": []}
+
+        zones = []
+        cfg = get_live_cfg()
+        if cfg is not None:
+            for c in cfg.cameras:
+                if c.name == cam_name:
+                    zones = [
+                        {
+                            "name": z.name,
+                            "type": z.type,
+                            "polygon": [[float(x), float(y)] for (x, y) in z.polygon],
+                        }
+                        for z in c.zones
+                    ]
+                    break
+
+        slots = []
+        for s in store.list_vehicle_slots(camera=cam_name):
+            try:
+                slots.append({
+                    "name": s["name"],
+                    "slot_box": json.loads(s["slot_box"]),
+                    "is_friendly": bool(s["is_friendly"]),
+                    "vehicle_id": s.get("vehicle_id"),
+                })
+            except Exception:
+                continue
+
+        return {
+            "camera": cam_name,
+            "slug": slug,
+            "detections": detections,
+            "zones": zones,
+            "slots": slots,
+            "updated_at": updated_at,
+            "source": source,
+            "open_event_id": open_event_id,
+            "mode": mode or "idle",
+        }
 
     @app.get("/api/live/{slug}/stream.mjpg")
     async def live_stream_mjpg(slug: str):
@@ -721,19 +763,31 @@ def create_app(output_dir: str, clips_dir: str, config_path: str) -> FastAPI:
                     "hsv_bins": sig.hsv_bins,
                 }
 
+        # Cross-camera identity: link to an existing vehicle (by id or exact name)
+        # or create one — creating a slot never duplicates a known vehicle name.
+        vehicle_name = (payload.vehicle_name or name).strip()
+        if payload.vehicle_id is not None:
+            if store.get_vehicle(payload.vehicle_id) is None:
+                raise HTTPException(status_code=404, detail="vehicle not found")
+            vehicle_id = payload.vehicle_id
+        else:
+            vehicle_id = store.get_or_create_vehicle(vehicle_name, color_name)
+
         slot_id = store.create_vehicle_slot(
             camera=payload.camera,
-            name=name,
+            name=vehicle_name,
             slot_box=json.dumps(payload.slot_box),
             color_name=color_name,
             appearance_sig=json.dumps(sig_data),
             is_friendly=1 if payload.is_friendly else 0,
         )
+        store.link_slot_vehicle(slot_id, vehicle_id)
         scenery.reload()
         return {
             "id": slot_id,
             "camera": payload.camera,
-            "name": name,
+            "name": vehicle_name,
+            "vehicle_id": vehicle_id,
             "slot_box": payload.slot_box,
             "color_name": color_name,
             "appearance_sig": sig_data,
@@ -745,14 +799,24 @@ def create_app(output_dir: str, clips_dir: str, config_path: str) -> FastAPI:
         slot = store.get_vehicle_slot(slot_id)
         if not slot:
             raise HTTPException(status_code=404, detail="Slot not found")
+
         fields = {}
-        if payload.name is not None:
+        if payload.name is not None and "vehicle_id" not in payload.model_fields_set:
             fields["name"] = payload.name.strip()
         if payload.is_friendly is not None:
             fields["is_friendly"] = 1 if payload.is_friendly else 0
         if fields:
             store.update_vehicle_slot(slot_id, **fields)
-            scenery.reload()
+
+        # Explicit vehicle_id (int = link, null = unlink) for cross-camera merging
+        if "vehicle_id" in payload.model_fields_set:
+            if payload.vehicle_id is None:
+                store.link_slot_vehicle(slot_id, None)
+            else:
+                if not store.link_slot_vehicle(slot_id, payload.vehicle_id):
+                    raise HTTPException(status_code=404, detail="vehicle not found")
+
+        scenery.reload()
         updated = store.get_vehicle_slot(slot_id)
         res = dict(updated)
         try:
@@ -761,6 +825,44 @@ def create_app(output_dir: str, clips_dir: str, config_path: str) -> FastAPI:
         except Exception:
             pass
         return res
+
+    # --- Global vehicles (cross-camera identity) ---
+
+    @app.get("/api/vehicles")
+    async def vehicles_list():
+        return store.list_vehicles()
+
+    @app.post("/api/vehicles", status_code=201)
+    async def vehicle_create(payload: VehicleCreate):
+        name = payload.name.strip()
+        if not name:
+            raise HTTPException(status_code=422, detail="Name cannot be empty")
+        try:
+            vid = store.create_vehicle(name, payload.color_name or "")
+        except sqlite3.IntegrityError:
+            raise HTTPException(status_code=409, detail="vehicle exists")
+        return {"id": vid, "name": name}
+
+    @app.patch("/api/vehicles/{vehicle_id}")
+    async def vehicle_rename(vehicle_id: int, payload: VehicleCreate):
+        name = payload.name.strip()
+        if not name:
+            raise HTTPException(status_code=422, detail="Name cannot be empty")
+        if store.get_vehicle(vehicle_id) is None:
+            raise HTTPException(status_code=404, detail="vehicle not found")
+        try:
+            store.rename_vehicle(vehicle_id, name)
+        except sqlite3.IntegrityError:
+            raise HTTPException(status_code=409, detail="vehicle exists")
+        scenery.reload()
+        return {"id": vehicle_id, "name": name}
+
+    @app.delete("/api/vehicles/{vehicle_id}")
+    async def vehicle_delete(vehicle_id: int):
+        if not store.delete_vehicle(vehicle_id):
+            raise HTTPException(status_code=404, detail="vehicle not found")
+        scenery.reload()
+        return {"ok": True}
 
     @app.delete("/api/scenery/slots/{slot_id}")
     async def scenery_slot_delete(slot_id: int):

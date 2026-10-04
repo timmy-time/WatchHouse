@@ -124,6 +124,7 @@
       </div>
 
       <div class="scenery-shell">
+        <div>
         <div class="cam-tile is-hero">
           <div class="cam-head">
             <span id="scenery-cam-title" class="cam-name">Camera</span>
@@ -135,6 +136,17 @@
             <canvas id="scenery-overlay-canvas"></canvas>
           </div>
           <div class="cam-foot">Drag on the frame to draw a slot box. Cars parked there are suppressed as friendly scenery.</div>
+        </div>
+
+        <div class="cam-tile" style="margin-top: 12px; overflow: visible;">
+          <div class="cam-head">
+            <span class="cam-name">Vehicles</span>
+            <span class="chip chip-accent" title="A vehicle is a global identity; slots link to it on each camera">cross-camera</span>
+            <span class="spacer"></span>
+            <button id="btn-refresh-vehicles" class="btn btn-ghost btn-xs">Refresh</button>
+          </div>
+          <div id="vehicles-list" class="form-stack" style="padding: 12px;"></div>
+        </div>
         </div>
 
         <div class="cam-tile" style="overflow: visible;">

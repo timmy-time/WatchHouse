@@ -31,6 +31,7 @@ class VehicleSlot:
     box: Tuple[float, float, float, float]  # [x1, y1, x2, y2] normalized [0..1]
     sig: VehicleSignature
     is_friendly: bool = True
+    vehicle_id: Optional[int] = None  # global cross-camera vehicle identity
 
 
 def _classify_color_name(hsv_crop: np.ndarray) -> str:
@@ -206,6 +207,7 @@ class SceneryManager:
                         box=box,
                         sig=sig,
                         is_friendly=bool(r["is_friendly"]),
+                        vehicle_id=r["vehicle_id"] if "vehicle_id" in r.keys() else None,
                     )
                     grouped.setdefault(cam, []).append(slot)
                 except Exception as exc:

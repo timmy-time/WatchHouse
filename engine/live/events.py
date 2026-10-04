@@ -221,6 +221,7 @@ class EventManager:
         self.event_notified_kinds: Set[str] = set()
 
         self.last_preview_time: float = 0.0
+        self._sighting_last: Dict[Tuple[int, str], float] = {}
         self.face_track_last_embed: Dict[int, float] = {}
         self.face_track_best_quality: Dict[int, float] = {}
         self.last_event_ended_at: float = 0.0
@@ -286,6 +287,18 @@ class EventManager:
                         # Anchored stationary inside slot: pin first center to fixed slot anchor
                         state.first_center = (slot_cx, slot_cy)
                         state.is_anchored = True
+
+                        # Cross-camera identity: record a throttled sighting for the
+                        # global vehicle this slot belongs to (max once per minute).
+                        if slot.vehicle_id is not None and self.store is not None:
+                            key = (slot.vehicle_id, self.cam.name)
+                            last = self._sighting_last.get(key, 0.0)
+                            if now - last >= 60.0:
+                                self._sighting_last[key] = now
+                                try:
+                                    self.store.record_sighting(slot.vehicle_id, self.cam.name)
+                                except Exception as exc:
+                                    logger.debug(f"sighting record failed: {exc}")
                     elif state.is_anchored:
                         # Only depart if slot is genuinely vacant (not temporary occlusion)
                         slot_occupied = self.scenery.is_slot_occupied(slot, relevant_dets, frame_w, frame_h)

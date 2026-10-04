@@ -240,6 +240,78 @@ class TestWebApi(unittest.TestCase):
         res_del404 = self.client.delete(f"/api/scenery/slots/{slot_id}")
         self.assertEqual(res_del404.status_code, 404)
 
+    def test_vehicles_api_crud(self):
+        # Create
+        res = self.client.post("/api/vehicles", json={"name": "Parked Car 1"})
+        self.assertEqual(res.status_code, 201)
+        vid = res.json()["id"]
+
+        # Duplicate -> 409
+        self.assertEqual(self.client.post("/api/vehicles", json={"name": "Parked Car 1"}).status_code, 409)
+
+        # Rename
+        res_ren = self.client.patch(f"/api/vehicles/{vid}", json={"name": "Parked Car 2"})
+        self.assertEqual(res_ren.status_code, 200)
+
+        # List shows it
+        listed = self.client.get("/api/vehicles").json()
+        self.assertEqual(len(listed), 1)
+        self.assertEqual(listed[0]["name"], "Parked Car 2")
+
+        # Delete
+        self.assertEqual(self.client.delete(f"/api/vehicles/{vid}").status_code, 200)
+        self.assertEqual(self.client.delete(f"/api/vehicles/{vid}").status_code, 404)
+
+    def test_slot_creation_links_vehicle_and_relinks_across_cameras(self):
+        # Slot on Camera B auto-creates + links a vehicle
+        res = self.client.post("/api/scenery/slots", json={
+            "camera": "Camera B", "name": "Parked Car 2", "slot_box": [0.1, 0.1, 0.3, 0.3],
+        })
+        self.assertEqual(res.status_code, 201)
+        slot_a = res.json()
+        vid = slot_a["vehicle_id"]
+        self.assertIsNotNone(vid)
+
+        # Second slot on Camera A with the SAME name reuses the vehicle
+        res2 = self.client.post("/api/scenery/slots", json={
+            "camera": "Camera A", "name": "Parked Car 2", "slot_box": [0.4, 0.0, 0.5, 0.1],
+        })
+        self.assertEqual(res2.status_code, 201)
+        slot_b = res2.json()
+        self.assertEqual(slot_b["vehicle_id"], vid)
+
+        vehicles = self.client.get("/api/vehicles").json()
+        self.assertEqual(len(vehicles), 1)  # no duplicate vehicle
+        self.assertEqual(vehicles[0]["cameras"], ["Camera A", "Camera B"])
+
+        # Merge a typo'd slot into the canonical vehicle: unlink then relink
+        res3 = self.client.post("/api/scenery/slots", json={
+            "camera": "Camera A", "name": "Parked Car 2", "slot_box": [0.5, 0.0, 0.6, 0.1],
+        })
+        typo = res3.json()
+        self.assertNotEqual(typo["vehicle_id"], vid)
+
+        relink = self.client.patch(f"/api/scenery/slots/{typo['id']}", json={"vehicle_id": vid})
+        self.assertEqual(relink.status_code, 200)
+        self.assertEqual(relink.json()["vehicle_id"], vid)
+        self.assertEqual(relink.json()["name"], "Parked Car 2")  # label follows the vehicle
+
+        # Unlink
+        unlink = self.client.patch(f"/api/scenery/slots/{typo['id']}", json={"vehicle_id": None})
+        self.assertEqual(unlink.status_code, 200)
+        self.assertIsNone(unlink.json()["vehicle_id"])
+
+        # Linking to a missing vehicle -> 404
+        bad = self.client.patch(f"/api/scenery/slots/{typo['id']}", json={"vehicle_id": 99999})
+        self.assertEqual(bad.status_code, 404)
+
+    def test_detections_endpoint_includes_zones_slots_and_source(self):
+        res = self.client.get("/api/live/Camera_C/detections")
+        self.assertEqual(res.status_code, 200)
+        body = res.json()
+        for key in ("camera", "slug", "detections", "zones", "slots", "mode"):
+            self.assertIn(key, body)
+
 
 if __name__ == "__main__":
     unittest.main()
