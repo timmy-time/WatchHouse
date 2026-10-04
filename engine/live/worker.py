@@ -8,7 +8,7 @@ import sys
 import threading
 import time
 import traceback
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 from engine.detector import ClipDetector
 from engine.faces import FaceEngine, FaceGallery
@@ -20,11 +20,19 @@ from engine.live.notify import Notifier
 from engine.live.stream import CameraStream
 from engine.scenery import SceneryManager
 import cv2
-from engine.live.auditor import EventAuditor
+from engine.live.auditor import DetailedVerifier
 from engine.live.dynamic_fps import DynamicFpsController
 from engine.live.scheduler import GpuScheduler
 
 logger = logging.getLogger(__name__)
+
+
+def _resolve_tracker_config(cfg: LiveConfig) -> str:
+    """Use the configured 15 fps ByteTrack profile when present, else Ultralytics default."""
+    tracker = cfg.analysis.tracker_config
+    if tracker and os.path.exists(tracker):
+        return tracker
+    return "bytetrack.yaml"
 
 
 class CameraWorker(threading.Thread):
@@ -40,7 +48,7 @@ class CameraWorker(threading.Thread):
         face_engine: Optional[FaceEngine],
         gallery: FaceGallery,
         scenery: Optional[SceneryManager] = None,
-        auditor: Optional[EventAuditor] = None,
+        verifier: Optional[DetailedVerifier] = None,
     ):
         super().__init__(name=f"Worker-{cam.slug}", daemon=True)
         self.cam = cam
@@ -51,23 +59,25 @@ class CameraWorker(threading.Thread):
         self.face_engine = face_engine
         self.gallery = gallery
         self.scenery = scenery
-        self.auditor = auditor
+        self.verifier = verifier
 
         self.stop_event = threading.Event()
         self.fps_analyzed = 0.0
         self.last_frame_at = 0.0
+        self.last_verify_push = 0.0
         self.fps_controller = DynamicFpsController(cfg.analysis.dynamic_fps)
         self.current_detections: List[Dict[str, Any]] = []
 
         self.stream = CameraStream(cam, cfg.recording, fps=cfg.analysis.fps)
         self.detector = ClipDetector(
             model_path=cfg.analysis.model,
-            device=cam.gpu,
+            device="",  # pinning is done via CUDA_VISIBLE_DEVICES at process start
             imgsz=cfg.analysis.imgsz,
+            tracker_config=_resolve_tracker_config(cfg),
         )
         self.finalizer = Finalizer(
             cam, cfg, store, output_dir,
-            on_finalized=(auditor.audit_event if auditor is not None else None),
+            on_finalized=(verifier.audit_event if verifier is not None else None),
         )
         self.manager = EventManager(
             cam=cam,
@@ -158,6 +168,17 @@ class CameraWorker(threading.Thread):
                 # overlays are drawn client-side, this keeps the stream smooth.
                 self.manager.update_preview(frame, t)
 
+                # Slow-path tap: hand a frame to the detailed verifier (GPU 1) every
+                # `detailed_interval` seconds, tagged with what realtime already sees.
+                if self.verifier is not None and (t - self.last_verify_push) >= self.cfg.analysis.detailed_interval:
+                    self.last_verify_push = t
+                    self.verifier.submit_sample(
+                        camera=self.cam.name,
+                        event_id=self.manager.open_event_id,
+                        frame=frame.copy(),
+                        seen_classes={d["class_name"] for d in self.current_detections},
+                    )
+
                 now = time.time()
                 if now - fps_start >= 5.0:
                     self.fps_analyzed = round(fps_count / (now - fps_start), 1)
@@ -196,6 +217,16 @@ def run_live(config_path: str, output_dir: str) -> int:
     logger.info(f"Loading live configuration from {config_path}")
     cfg = load_live_config(config_path)
 
+    # Pin this process to the realtime GPU *before* any CUDA call. Ultralytics'
+    # select_device rewrites CUDA_VISIBLE_DEVICES per call, so the only reliable
+    # multi-GPU strategy is one process per role: this process = realtime GPU
+    # (all workers use visible device 0), the verifier child = detailed GPU.
+    os.environ["CUDA_VISIBLE_DEVICES"] = str(cfg.analysis.realtime_gpu)
+    logger.info(
+        f"Realtime process pinned to GPU {cfg.analysis.realtime_gpu} "
+        f"(CUDA_VISIBLE_DEVICES={os.environ['CUDA_VISIBLE_DEVICES']})"
+    )
+
     active_cams = [c for c in cfg.cameras if c.url]
     for c in cfg.cameras:
         if not c.url:
@@ -220,24 +251,41 @@ def run_live(config_path: str, output_dir: str) -> int:
     scenery = SceneryManager(store)
     gpu_scheduler = GpuScheduler()
 
-    # Secondary high-resolution auditor on the second GPU (falls back to GPU 0)
-    auditor_device = 1 if gpu_scheduler.has_cuda and len(gpu_scheduler.devices) > 1 else 0
-    auditor = EventAuditor(
+    # --- Dual-GPU roles (process-pinned) ---
+    # This process is pinned to the realtime GPU (visible device 0). The verifier
+    # child pins itself to the detailed GPU. Same index => single-GPU mode.
+    realtime_device = 0  # visible index inside this process (pinned to the realtime GPU)
+    detailed_physical = cfg.analysis.detailed_gpu
+    realtime_physical = cfg.analysis.realtime_gpu
+    if realtime_physical == detailed_physical:
+        logger.warning(
+            "realtime_gpu == detailed_gpu (%s): single-GPU mode, expect contention",
+            realtime_physical,
+        )
+
+    verifier = DetailedVerifier(
         store=store,
         output_dir=output_dir,
-        model_name=cfg.analysis.model,
-        device=auditor_device,
-        conf_threshold=0.25,
+        model_name=cfg.analysis.detailed_model,
+        device=detailed_physical,
+        imgsz=cfg.analysis.detailed_imgsz,
+        conf_threshold=cfg.analysis.detailed_conf,
+        notify_classes=set(cfg.notifications.notify_classes),
+        notifier=notifier,
     )
-    auditor.start()
-    logger.info(f"EventAuditor started on device {auditor_device}")
+    verifier.start()
+    logger.info(
+        f"DetailedVerifier launched on physical GPU {detailed_physical} "
+        f"({cfg.analysis.detailed_model} @ {cfg.analysis.detailed_imgsz}px)"
+    )
 
     model_dir = os.environ.get("FACE_MODEL_DIR", "/opt/models")
     workers: List[CameraWorker] = []
 
     for cam in active_cams:
-        assigned_gpu = gpu_scheduler.assign_camera(cam.name, cam.gpu)
-        cam.gpu = assigned_gpu
+        # All realtime work uses visible device 0 in this process (pinned to realtime GPU).
+        cam.gpu = realtime_device
+        gpu_scheduler.assign_camera(cam.name, realtime_device)
 
     for cam in active_cams:
         face_engine = None
@@ -260,7 +308,7 @@ def run_live(config_path: str, output_dir: str) -> int:
             face_engine=face_engine,
             gallery=gallery,
             scenery=scenery,
-            auditor=auditor,
+            verifier=verifier,
         )
         workers.append(worker)
         worker.start()
@@ -282,6 +330,7 @@ def run_live(config_path: str, output_dir: str) -> int:
             status_data = {
                 "updated_at": time.time(),
                 "gpus": gpu_scheduler.poll_metrics(),
+                "verifier": verifier.status(),
                 "cameras": {
                     w.cam.name: {
                         "slug": w.cam.slug,
@@ -316,7 +365,7 @@ def run_live(config_path: str, output_dir: str) -> int:
             w.stop()
         for w in workers:
             w.join(timeout=5.0)
-        auditor.stop()
+        verifier.stop()
         notifier.stop()
         logger.info("Live analytics stopped cleanly")
 

@@ -1,7 +1,7 @@
 """Video and thumbnail object detection and tracking using Ultralytics YOLOv8 and ByteTrack."""
 
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple, Union
 import os
 try:
     from ultralytics import YOLO
@@ -62,14 +62,61 @@ def _parse_track_boxes(r, frame_idx: int) -> List[TrackDetection]:
 class ClipDetector:
     """Wrapper around YOLOv8 model for batched inference and video tracking."""
 
-    def __init__(self, model_path: str = "yolov8n.pt", device: int = 0, imgsz: int = 640):
+    def __init__(
+        self,
+        model_path: str = "yolov8n.pt",
+        device: Union[int, str] = 0,
+        imgsz: int = 640,
+        tracker_config: str = "bytetrack.yaml",
+    ):
+        """Wrapper around a YOLO model.
+
+        device: int/str index is passed to Ultralytics (which overwrites
+        CUDA_VISIBLE_DEVICES for any non-empty value). Pass "" to let the
+        process-pinned CUDA_VISIBLE_DEVICES decide — required for multi-GPU
+        setups where each process owns one GPU.
+        """
         self.device = device
         self.model_path = model_path
         self.imgsz = imgsz
+        self.tracker_config = tracker_config
         # Ultralytics model load with target CUDA device
         if YOLO is None:
             raise RuntimeError("ultralytics is required for ClipDetector")
         self.model = YOLO(model_path)
+
+    def detect_frame(self, frame, conf_threshold: float = 0.35) -> List[Detection]:
+        """Stateless single-frame detection (no tracker state)."""
+        results = self.model.predict(
+            source=frame,
+            device=self.device,
+            conf=conf_threshold,
+            verbose=False,
+            imgsz=self.imgsz,
+        )
+        detections: List[Detection] = []
+        if not results:
+            return detections
+
+        r = results[0]
+        if r.boxes is None or len(r.boxes) == 0:
+            return detections
+
+        for box in r.boxes:
+            cls_id = int(box.cls[0].item())
+            class_name = r.names[cls_id]
+            conf = float(box.conf[0].item())
+            xyxy = tuple(box.xyxy[0].tolist())
+            xywh = tuple(box.xywh[0].tolist())
+            detections.append(
+                Detection(
+                    class_name=class_name,
+                    confidence=conf,
+                    bbox_xyxy=(xyxy[0], xyxy[1], xyxy[2], xyxy[3]),
+                    bbox_xywh=(xywh[0], xywh[1], xywh[2], xywh[3]),
+                )
+            )
+        return detections
 
     def detect_thumbnail(self, image_path: str, conf_threshold: float = 0.35) -> List[Detection]:
         """Perform fast single-frame object detection on thumbnail image."""
@@ -112,7 +159,7 @@ class ClipDetector:
             source=frame,
             persist=True,
             conf=conf_threshold,
-            tracker="bytetrack.yaml",
+            tracker=self.tracker_config,
             device=self.device,
             verbose=False,
             imgsz=self.imgsz,

@@ -1,0 +1,10 @@
+# ByteTrack tuned for the 15 fps realtime path (one tracker state per camera).
+# track_buffer=60 frames ≈ 4 s of occlusion tolerance at 15 fps.
+# The batch pipeline keeps Ultralytics' default (30) since it subsamples at stride 15.
+tracker_type: bytetrack
+track_high_thresh: 0.25
+track_low_thresh: 0.10
+new_track_thresh: 0.25
+track_buffer: 60
+match_thresh: 0.80
+fuse_score: True

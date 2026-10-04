@@ -36,14 +36,22 @@ class RecordingConfig:
 
 @dataclass
 class AnalysisConfig:
-    fps: int = 5
+    fps: int = 15
     model: str = "yolov8n.pt"
     confidence: float = 0.30
+    imgsz: int = 640
     pre_roll_seconds: int = 5
     post_roll_seconds: int = 10
     max_event_seconds: int = 300
-    imgsz: int = 640
     dynamic_fps: DynamicFpsConfig = field(default_factory=DynamicFpsConfig)
+    # Dual-GPU roles
+    realtime_gpu: int = 0          # fast path: all camera workers
+    detailed_gpu: int = 1          # slow path: detailed verifier
+    detailed_model: str = "yolov8s.pt"
+    detailed_imgsz: int = 1280
+    detailed_conf: float = 0.25
+    detailed_interval: float = 2.0  # seconds between detailed frame samples per camera
+    tracker_config: str = "config/bytetrack_live.yaml"
 
 
 @dataclass
@@ -85,6 +93,7 @@ class CameraConfig:
     gpu: Optional[int] = 0
     zones: List[Zone] = field(default_factory=list)
     slug: str = ""
+    sub_url: str = ""   # optional DVR substream for the realtime analysis path
 
 
 @dataclass
@@ -113,20 +122,27 @@ def load_live_config(path: str) -> LiveConfig:
 
     ana_raw = raw.get("analysis", {})
     analysis = AnalysisConfig(
-        fps=int(ana_raw.get("fps", 5)),
+        fps=int(ana_raw.get("fps", 15)),
         model=str(ana_raw.get("model", "yolov8n.pt")),
         confidence=float(ana_raw.get("confidence", 0.30)),
         pre_roll_seconds=int(ana_raw.get("pre_roll_seconds", 5)),
         post_roll_seconds=int(ana_raw.get("post_roll_seconds", 10)),
         max_event_seconds=int(ana_raw.get("max_event_seconds", 300)),
         imgsz=int(ana_raw.get("imgsz", 640)),
+        realtime_gpu=int(ana_raw.get("realtime_gpu", 0)),
+        detailed_gpu=int(ana_raw.get("detailed_gpu", 1)),
+        detailed_model=str(ana_raw.get("detailed_model", "yolov8s.pt")),
+        detailed_imgsz=int(ana_raw.get("detailed_imgsz", 1280)),
+        detailed_conf=float(ana_raw.get("detailed_conf", 0.25)),
+        detailed_interval=float(ana_raw.get("detailed_interval", 2.0)),
+        tracker_config=str(ana_raw.get("tracker_config", "config/bytetrack_live.yaml")),
         dynamic_fps=(
             DynamicFpsConfig(enabled=bool(ana_raw.get("dynamic_fps")))
             if isinstance(ana_raw.get("dynamic_fps"), bool)
             else DynamicFpsConfig(
                 enabled=bool(ana_raw.get("dynamic_fps", {}).get("enabled", True)),
-                idle_fps=float(ana_raw.get("dynamic_fps", {}).get("idle_fps", 2.0)),
-                boost_fps=float(ana_raw.get("dynamic_fps", {}).get("boost_fps", 5.0)),
+                idle_fps=float(ana_raw.get("dynamic_fps", {}).get("idle_fps", 3.0)),
+                boost_fps=float(ana_raw.get("dynamic_fps", {}).get("boost_fps", 15.0)),
                 motion_threshold=float(ana_raw.get("dynamic_fps", {}).get("motion_threshold", 0.015)),
                 boost_cooldown=float(ana_raw.get("dynamic_fps", {}).get("boost_cooldown", 12.0)),
             )
@@ -191,7 +207,10 @@ def load_live_config(path: str) -> LiveConfig:
                     polygon=poly_tuples,
                 )
             )
-        cameras.append(CameraConfig(name=name, url=url, gpu=gpu, zones=zones, slug=slug))
+        cameras.append(CameraConfig(
+            name=name, url=url, gpu=gpu, zones=zones, slug=slug,
+            sub_url=_env_str(c.get("sub_url", "")),
+        ))
 
     return LiveConfig(
         recording=recording,

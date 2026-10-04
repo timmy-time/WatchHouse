@@ -11,8 +11,8 @@ import numpy as np
 @dataclass
 class DynamicFpsConfig:
     enabled: bool = True
-    idle_fps: float = 2.0
-    boost_fps: float = 5.0
+    idle_fps: float = 3.0
+    boost_fps: float = 15.0
     motion_threshold: float = 0.015  # Fraction of pixels changed (1.5%)
     boost_cooldown: float = 12.0     # Stay in boost for 12s after last motion/event
 

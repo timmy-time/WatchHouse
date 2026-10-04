@@ -3,12 +3,25 @@ recording:
   segment_seconds: 10
   ring_minutes: 15
 analysis:
-  fps: 5
+  fps: 15
   model: yolov8n.pt
   confidence: 0.30
   pre_roll_seconds: 5
   post_roll_seconds: 10
   max_event_seconds: 45
+  tracker_config: config/bytetrack_live.yaml
+  realtime_gpu: 0
+  detailed_gpu: 1
+  detailed_model: yolov8s.pt
+  detailed_imgsz: 1280
+  detailed_conf: 0.25
+  detailed_interval: 2.0
+  dynamic_fps:
+    enabled: true
+    idle_fps: 3.0
+    boost_fps: 15.0
+    motion_threshold: 0.015
+    boost_cooldown: 12.0
 faces:
   enabled: true
   min_face_px: 40

@@ -27,14 +27,14 @@ def _worker_loop(
     result_queue: mp.Queue,
 ):
     """Worker process targeting a dedicated GPU device."""
-    # Ensure torch/ultralytics runs on the assigned device
+    # Pin the GPU via env and pass device="" so ultralytics' select_device()
+    # never rewrites CUDA_VISIBLE_DEVICES (it overwrites it for any index).
     os.environ["CUDA_VISIBLE_DEVICES"] = str(gpu_id)
-    # Inside the worker, with CUDA_VISIBLE_DEVICES set, device index is 0
     try:
-        detector = ClipDetector(model_path=model_path, device=0)
-    except Exception as e:
-        # Fallback to direct device assignment if CUDA_VISIBLE_DEVICES didn't take
-        detector = ClipDetector(model_path=model_path, device=gpu_id)
+        detector = ClipDetector(model_path=model_path, device="")
+    except Exception:
+        # No CUDA available in this worker -> fall back to CPU
+        detector = ClipDetector(model_path=model_path, device="cpu")
 
     while True:
         task = task_queue.get()

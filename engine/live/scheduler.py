@@ -32,6 +32,34 @@ class GpuScheduler:
         self._discover_devices()
 
     def _discover_devices(self) -> None:
+        # Prefer nvidia-smi: it lists ALL physical GPUs even when this process is
+        # pinned via CUDA_VISIBLE_DEVICES (torch would only see the pinned one).
+        smi = shutil.which("nvidia-smi")
+        if smi:
+            try:
+                res = subprocess.run(
+                    [smi, "--query-gpu=index,name,memory.total", "--format=csv,noheader,nounits"],
+                    capture_output=True,
+                    text=True,
+                    timeout=5,
+                )
+                if res.returncode == 0:
+                    for line in res.stdout.strip().split("\n"):
+                        if not line.strip():
+                            continue
+                        parts = [p.strip() for p in line.split(",")]
+                        idx = int(parts[0])
+                        name = parts[1]
+                        total_mb = int(float(parts[2]))
+                        self.devices[idx] = GpuDevice(index=idx, name=name, total_memory_mb=total_mb)
+                    if self.devices:
+                        self.has_cuda = True
+                        logger.info(f"GpuScheduler discovered {len(self.devices)} GPU(s) via nvidia-smi")
+                        return
+            except Exception as exc:
+                logger.debug(f"nvidia-smi probe error: {exc}")
+
+        # Fallback: torch (sees only CUDA-visible devices)
         try:
             import torch
             if torch.cuda.is_available():
@@ -46,37 +74,10 @@ class GpuScheduler:
                         name=name,
                         total_memory_mb=total_mb,
                     )
-                logger.info(f"GpuScheduler discovered {count} CUDA device(s)")
+                logger.info(f"GpuScheduler discovered {count} CUDA device(s) via torch")
                 return
         except Exception as exc:
             logger.debug(f"PyTorch CUDA probe error: {exc}")
-
-        # Fallback to nvidia-smi if torch failed or not loaded yet
-        smi = shutil.which("nvidia-smi")
-        if smi:
-            try:
-                res = subprocess.run(
-                    [smi, "--query-gpu=index,name,memory.total", "--format=csv,noheader,nounits"],
-                    capture_output=True,
-                    text=True,
-                    timeout=5,
-                )
-                if res.returncode == 0:
-                    lines = res.stdout.strip().split("\n")
-                    for line in lines:
-                        if not line.strip():
-                            continue
-                        parts = [p.strip() for p in line.split(",")]
-                        idx = int(parts[0])
-                        name = parts[1]
-                        total_mb = int(float(parts[2]))
-                        self.devices[idx] = GpuDevice(index=idx, name=name, total_memory_mb=total_mb)
-                    if self.devices:
-                        self.has_cuda = True
-                        logger.info(f"GpuScheduler discovered {len(self.devices)} GPU(s) via nvidia-smi")
-                        return
-            except Exception as exc:
-                logger.debug(f"nvidia-smi probe error: {exc}")
 
         logger.info("GpuScheduler running in CPU-only mode (no CUDA devices found)")
 

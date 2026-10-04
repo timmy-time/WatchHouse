@@ -186,7 +186,9 @@ function tileInner(name, cam, isHero) {
       <div class="cam-hud">
         <span class="badge js-conn">…</span>
         <span class="badge badge-decode js-decode">${escapeHtml((cam.decode || "cpu").toUpperCase())}</span>
+        <span class="badge js-src">${escapeHtml((cam.source || "main").toUpperCase())}</span>
         <span class="badge js-fps">0 fps</span>
+        <span class="badge js-infer">0 infer</span>
       </div>
       ${isHero ? `<div class="cam-actions">
         <button class="icon-btn js-full" title="Fullscreen">⛶</button>
@@ -209,6 +211,7 @@ function buildTile(name, cam, isHero) {
   } else {
     tile.onclick = () => {
       liveHeroSlug = cam.slug;
+      try { localStorage.setItem("liveHeroSlug", cam.slug); } catch (_) {}
       renderLiveTiles(liveCameras);
       drawAllOverlays();
     };
@@ -220,7 +223,12 @@ function renderLiveTiles(cameras) {
   const names = Object.keys(cameras);
   if (names.length === 0) return;
 
-  if (!liveHeroSlug || !cameras[liveHeroSlug]) liveHeroSlug = names[0];
+  // liveHeroSlug holds a slug; cameras is keyed by NAME — resolve via slug map.
+  const bySlug = camListByName(cameras);
+  if (!liveHeroSlug) {
+    try { liveHeroSlug = localStorage.getItem("liveHeroSlug") || null; } catch (_) {}
+  }
+  if (!liveHeroSlug || !bySlug[liveHeroSlug]) liveHeroSlug = cameras[names[0]].slug;
 
   const stage = document.getElementById("stage");
   const strip = document.getElementById("filmstrip");
@@ -267,8 +275,12 @@ function renderLiveTiles(cameras) {
 
     const dec = tile.querySelector(".js-decode");
     if (dec) dec.textContent = (cam.decode || "cpu").toUpperCase();
+    const src = tile.querySelector(".js-src");
+    if (src) src.textContent = (cam.source || "main").toUpperCase();
     const fps = tile.querySelector(".js-fps");
-    if (fps) fps.textContent = `${cam.fps_analyzed ?? 0} fps`;
+    if (fps) fps.textContent = `${cam.fps_in ?? 0} fps in`;
+    const infer = tile.querySelector(".js-infer");
+    if (infer) infer.textContent = `${cam.fps_analyzed ?? 0} infer`;
     tile.classList.toggle("is-active", tile.dataset.slug === liveHeroSlug);
   });
 }

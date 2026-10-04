@@ -714,7 +714,7 @@ class EventManager:
         self,
         frame: np.ndarray,
         now: float,
-        min_interval: float = 0.16,
+        min_interval: float = 0.08,
     ) -> None:
         """Write a clean, high-resolution preview JPEG (no baked-in overlays).
 

@@ -48,6 +48,8 @@ class CameraStream:
         self.height = 1080
         self.use_hwaccel = True
         self.nvdec_fail_count = 0
+        self.sub_failed = False
+        self.sub_fail_count = 0
 
         self.proc: Optional[subprocess.Popen] = None
         self.stop_event = threading.Event()
@@ -61,8 +63,14 @@ class CameraStream:
 
         self.supervisor_thread = threading.Thread(target=self._supervisor_loop, daemon=True)
 
+    def _analysis_url(self) -> str:
+        """URL used for the realtime analysis pipe: substream when available and healthy."""
+        if self.cam.sub_url and not self.sub_failed:
+            return self.cam.sub_url
+        return self.cam.url
+
     def probe(self) -> Tuple[int, int]:
-        """Probe RTSP stream resolution using ffprobe."""
+        """Probe the analysis stream resolution using ffprobe."""
         cmd = [
             FFPROBE_BIN,
             "-v",
@@ -77,7 +85,7 @@ class CameraStream:
             "stream=width,height",
             "-of",
             "csv=p=0",
-            self.cam.url,
+            self._analysis_url(),
         ]
         try:
             res = subprocess.run(cmd, capture_output=True, text=True, timeout=15)
@@ -92,59 +100,64 @@ class CameraStream:
         return self.width, self.height
 
     def build_cmd(self, hwaccel: bool) -> List[str]:
-        """Build exact ffmpeg command splitting RTSP into segments and rawvideo pipe."""
+        """Build the ffmpeg command: record main stream, pipe analysis frames.
+
+        Single process, up to two RTSP inputs:
+          input 0 = analysis source (substream when configured) -> rawvideo pipe
+          input 1 = main stream -> MP4 segments (stream copy, never decoded)
+        With no substream the classic single-input command is used.
+        """
         rec_dir = os.path.join(self.rec_cfg.root, self.cam.slug)
         os.makedirs(rec_dir, exist_ok=True)
         segment_pattern = os.path.join(rec_dir, "%Y%m%d-%H%M%S.mp4")
 
-        cmd = [
-            FFMPEG_BIN,
-            "-hide_banner",
-            "-loglevel",
-            "warning",
-            "-nostdin",
-            "-rtsp_transport",
-            "tcp",
-            "-stimeout",
-            "10000000",
-        ]
-        if hwaccel:
-            cmd += ["-hwaccel", "cuda", "-hwaccel_device", str(self.cam.gpu)]
-
-        cmd += [
-            "-i",
-            self.cam.url,
-            "-map",
-            "0:v:0",
-            "-map",
-            "0:a:0?",
-            "-c:v",
-            "copy",
-            "-c:a",
-            "aac",
-            "-b:a",
-            "32k",
-            "-f",
-            "segment",
-            "-segment_time",
-            str(self.rec_cfg.segment_seconds),
-            "-segment_format",
-            "mp4",
-            "-reset_timestamps",
-            "1",
-            "-strftime",
-            "1",
+        segment_args = [
+            "-f", "segment",
+            "-segment_time", str(self.rec_cfg.segment_seconds),
+            "-segment_format", "mp4",
+            "-reset_timestamps", "1",
+            "-strftime", "1",
             segment_pattern,
-            "-map",
-            "0:v:0",
-            "-vf",
-            f"fps={self.fps}",
-            "-pix_fmt",
-            "bgr24",
-            "-f",
-            "rawvideo",
+        ]
+
+        pipe_args = [
+            "-vf", f"fps={self.fps}",
+            "-pix_fmt", "bgr24",
+            "-f", "rawvideo",
             "pipe:1",
         ]
+
+        cmd = [FFMPEG_BIN, "-hide_banner", "-loglevel", "warning", "-nostdin"]
+
+        if self.cam.sub_url and not self.sub_failed:
+            # --- Dual input: analysis on substream, recording on main ---
+            if hwaccel:
+                cmd += ["-hwaccel", "cuda", "-hwaccel_device", str(self.cam.gpu)]
+            cmd += [
+                "-rtsp_transport", "tcp", "-stimeout", "10000000",
+                "-i", self.cam.sub_url,
+                "-rtsp_transport", "tcp", "-stimeout", "10000000",
+                "-i", self.cam.url,
+                # Output 1: MP4 segments, copied from main (no decode cost)
+                "-map", "1:v:0", "-map", "1:a:0?",
+                "-c:v", "copy", "-c:a", "aac", "-b:a", "32k",
+            ] + segment_args + [
+                # Output 2: raw analysis frames from the substream
+                "-map", "0:v:0",
+            ] + pipe_args
+            return cmd
+
+        # --- Single input: same stream for recording and analysis ---
+        cmd += ["-rtsp_transport", "tcp", "-stimeout", "10000000"]
+        if hwaccel:
+            cmd += ["-hwaccel", "cuda", "-hwaccel_device", str(self.cam.gpu)]
+        cmd += [
+            "-i", self.cam.url,
+            "-map", "0:v:0", "-map", "0:a:0?",
+            "-c:v", "copy", "-c:a", "aac", "-b:a", "32k",
+        ] + segment_args + [
+            "-map", "0:v:0",
+        ] + pipe_args
         return cmd
 
     def start(self) -> None:
@@ -235,10 +248,28 @@ class CameraStream:
                 if self.nvdec_fail_count >= 3:
                     self.use_hwaccel = False
                     logger.warning(f"{self.cam.name}: NVDEC failed 3x, falling back to CPU decode")
-            elif elapsed >= 60.0:
-                # Reset backoff and failure counter after 60s of healthy running
+
+            # Substream fallback: 2 rapid failures while using the substream -> main-only
+            if self.cam.sub_url and not self.sub_failed and elapsed < 10.0:
+                self.sub_fail_count += 1
+                if self.sub_fail_count >= 2:
+                    self.sub_failed = True
+                    logger.warning(
+                        f"{self.cam.name}: substream failed {self.sub_fail_count}x, "
+                        f"falling back to main stream for analysis"
+                    )
+                    self.probe()
+
+            if elapsed >= 60.0:
+                # Reset backoff and failure counters after 60s of healthy running
                 backoff_idx = 0
                 self.nvdec_fail_count = 0
+            if self.sub_failed and self.sub_fail_count > 0 and elapsed >= 60.0:
+                was_failed = self.sub_failed
+                self.sub_failed = False
+                self.sub_fail_count = 0
+                if was_failed:
+                    logger.info(f"{self.cam.name}: retrying substream after healthy main-only run")
 
             delay = backoff_steps[min(backoff_idx, len(backoff_steps) - 1)]
             backoff_idx = min(backoff_idx + 1, len(backoff_steps) - 1)
@@ -266,6 +297,7 @@ class CameraStream:
         return {
             "connected": connected,
             "decode": "nvdec" if self.use_hwaccel else "cpu",
+            "source": "sub" if (self.cam.sub_url and not self.sub_failed) else "main",
             "fps_in": self.fps_in,
             "restarts": self.restarts,
             "error": self.last_error,
