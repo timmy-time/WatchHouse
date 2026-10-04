@@ -186,6 +186,11 @@ class ArchiveHelperTests(unittest.TestCase):
 
 class ArchiveApiTests(unittest.TestCase):
     def setUp(self):
+        # create_app installs BasicAuthMiddleware when both vars are set, which would
+        # turn every request here into a 401 in an environment that exports them.
+        self._auth_env = {
+            key: os.environ.pop(key, None) for key in ("DASHBOARD_USER", "DASHBOARD_PASSWORD")
+        }
         self.tmp = tempfile.mkdtemp()
         self.output_dir = os.path.join(self.tmp, "output")
         self.clips_dir = os.path.join(self.tmp, "clips")
@@ -219,6 +224,9 @@ class ArchiveApiTests(unittest.TestCase):
 
     def tearDown(self):
         shutil.rmtree(self.tmp, ignore_errors=True)
+        for key, value in self._auth_env.items():
+            if value is not None:
+                os.environ[key] = value
 
     def test_summary_exposes_facets(self):
         body = self.client.get("/api/archive/summary").json()
