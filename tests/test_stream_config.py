@@ -145,6 +145,24 @@ cameras:
         self.assertEqual(cfg.analysis.realtime_gpu, 0)
         self.assertEqual(cfg.analysis.detailed_gpu, 1)
 
+    def test_per_camera_overrides_parsing(self):
+        path = self._write(
+            """
+cameras:
+  - name: Camera A
+    url: "rtsp://dvr/main"
+  - name: Camera D
+    url: "rtsp://dvr/back"
+    confidence: 0.20
+    tracker_config: config/bytetrack_flicker.yaml
+"""
+        )
+        cfg = load_live_config(path)
+        by_name = {c.name: c for c in cfg.cameras}
+        self.assertIsNone(by_name["Camera A"].confidence)         # falls back to analysis.*
+        self.assertEqual(by_name["Camera D"].confidence, 0.20)
+        self.assertEqual(by_name["Camera D"].tracker_config, "config/bytetrack_flicker.yaml")
+
     def test_record_flag_parsing(self):
         path = self._write(
             """

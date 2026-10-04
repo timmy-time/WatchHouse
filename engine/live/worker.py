@@ -27,9 +27,9 @@ from engine.live.scheduler import GpuScheduler
 logger = logging.getLogger(__name__)
 
 
-def _resolve_tracker_config(cfg: LiveConfig) -> str:
-    """Use the configured 15 fps ByteTrack profile when present, else Ultralytics default."""
-    tracker = cfg.analysis.tracker_config
+def _resolve_tracker_config(cfg: LiveConfig, cam: Optional[CameraConfig] = None) -> str:
+    """Per-camera tracker profile (e.g. flicker-tolerant), else the global one."""
+    tracker = (cam.tracker_config if cam is not None and cam.tracker_config else cfg.analysis.tracker_config)
     if tracker and os.path.exists(tracker):
         return tracker
     return "bytetrack.yaml"
@@ -111,11 +111,16 @@ class CameraWorker(threading.Thread):
         self.current_detections: List[Dict[str, Any]] = []
 
         self.stream = CameraStream(cam, cfg.recording, fps=cfg.analysis.fps)
+        # Per-camera detection overrides (falling back to the global analysis config)
+        self.model_path = cam.model or cfg.analysis.model
+        self.imgsz = cam.imgsz or cfg.analysis.imgsz
+        self.conf_threshold = cam.confidence if cam.confidence is not None else cfg.analysis.confidence
+        self.tracker_config = _resolve_tracker_config(cfg, cam)
         self.detector = ClipDetector(
-            model_path=cfg.analysis.model,
+            model_path=self.model_path,
             device="",  # pinning is done via CUDA_VISIBLE_DEVICES at process start
-            imgsz=cfg.analysis.imgsz,
-            tracker_config=_resolve_tracker_config(cfg),
+            imgsz=self.imgsz,
+            tracker_config=self.tracker_config,
         )
         # Live-only cameras (record=False) get no clip assembly thread at all.
         self.finalizer = Finalizer(
@@ -196,7 +201,7 @@ class CameraWorker(threading.Thread):
                     dets = self.detector.track_frame(
                         frame,
                         frame_idx=frame_idx,
-                        conf_threshold=self.cfg.analysis.confidence,
+                        conf_threshold=self.conf_threshold,
                     )
                     frame_idx += 1
 
@@ -270,7 +275,10 @@ class CameraWorker(threading.Thread):
                     self.stream.stop()
                     self.stream = CameraStream(self.cam, self.cfg.recording, fps=self.cfg.analysis.fps)
                     self.stream.start()
-                    self.detector = ClipDetector(model_path=self.cfg.analysis.model, device="")
+                    self.detector = ClipDetector(
+                        model_path=self.model_path, device="", imgsz=self.imgsz,
+                        tracker_config=self.tracker_config,
+                    )
                 except Exception as rebuild_exc:
                     logger.error(f"{self.cam.name}: Rebuild failed: {rebuild_exc}")
 

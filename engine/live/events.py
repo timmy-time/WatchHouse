@@ -1,5 +1,6 @@
 """Live event lifecycle, qualification, behavior tracking, and face recognition."""
 
+from collections import deque
 from dataclasses import asdict
 from datetime import datetime
 import json
@@ -222,6 +223,9 @@ class EventManager:
 
         self.last_preview_time: float = 0.0
         self._sighting_last: Dict[Tuple[int, str], float] = {}
+        # Per-slot timestamps of vehicle detections whose centre fell inside a
+        # friendly slot (drives jitter-proof absorption of parked vehicles).
+        self._slot_occupancy: Dict[str, deque] = {}
         self.face_track_last_embed: Dict[int, float] = {}
         self.face_track_best_quality: Dict[int, float] = {}
         self.last_event_ended_at: float = 0.0
@@ -261,6 +265,51 @@ class EventManager:
 
             # Scenery slot anchor check for vehicles
             if self.scenery is not None and d.class_name in VEHICLE_CLASSES:
+                # --- Slot-occupancy absorption (jitter-proof) ---
+                # A friendly slot with a parked vehicle inside repeatedly produces
+                # detections whose boxes jitter (foliage/partial occlusion). Tracking
+                # that jitter makes parked cars look like moving vehicles and spams
+                # arrived/departed/passing events. If a friendly slot has continuous
+                # vehicle presence, any detection inside it is attributed to the
+                # parked vehicle and absorbed (never qualifies for an event) until
+                # the slot is genuinely empty again.
+                cx_n = center[0] / frame_w
+                cy_n = center[1] / frame_h
+                absorbed = False
+                for slot in self.scenery.get_slots(self.cam.name):
+                    if not slot.is_friendly:
+                        continue
+                    inside = slot.box[0] <= cx_n <= slot.box[2] and slot.box[1] <= cy_n <= slot.box[3]
+                    if not inside:
+                        continue
+
+                    evidence = self._slot_occupancy.setdefault(slot.name, deque(maxlen=60))
+                    evidence.append(now)
+                    recent = sum(1 for t in evidence if now - t <= 2.0)
+
+                    if recent >= 3:
+                        state.anchored_slot_name = slot.name
+                        state.is_anchored = True
+                        state.slot_center = (
+                            ((slot.box[0] + slot.box[2]) / 2.0) * frame_w,
+                            ((slot.box[1] + slot.box[3]) / 2.0) * frame_h,
+                        )
+                        state.first_center = state.slot_center
+                        absorbed = True
+                        if slot.vehicle_id is not None and self.store is not None:
+                            key = (slot.vehicle_id, self.cam.name)
+                            if now - self._sighting_last.get(key, 0.0) >= 60.0:
+                                self._sighting_last[key] = now
+                                try:
+                                    self.store.record_sighting(slot.vehicle_id, self.cam.name)
+                                except Exception as exc:
+                                    logger.debug(f"sighting record failed: {exc}")
+                    break
+
+                if absorbed:
+                    observe(state, now, d, self.cam.zones, frame_w, frame_h, fps=self.cfg.analysis.fps)
+                    continue
+
                 # Only anchor stationary vehicles (not moving traffic)
                 track_is_moving = False
                 if len(state.window) >= 3:

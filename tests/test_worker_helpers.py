@@ -49,5 +49,22 @@ class TestTrackVelocity(unittest.TestCase):
         self.assertLessEqual(abs(vy), 3.0)
 
 
+class TestTrackerResolution(unittest.TestCase):
+    def test_per_camera_tracker_overrides_global(self):
+        from engine.live.config import CameraConfig, LiveConfig
+        from engine.live.worker import _resolve_tracker_config
+
+        cfg = LiveConfig()
+        cfg.analysis.tracker_config = "config/bytetrack_live.yaml"
+        cam_override = CameraConfig(name="Camera D", url="x", tracker_config="config/bytetrack_flicker.yaml")
+        cam_plain = CameraConfig(name="Camera A", url="x")
+
+        self.assertEqual(_resolve_tracker_config(cfg, cam_override), "config/bytetrack_flicker.yaml")
+        self.assertEqual(_resolve_tracker_config(cfg, cam_plain), "config/bytetrack_live.yaml")
+        # Missing files fall back to the Ultralytics default
+        cfg.analysis.tracker_config = "config/does_not_exist.yaml"
+        self.assertEqual(_resolve_tracker_config(cfg, CameraConfig(name="X", url="y")), "bytetrack.yaml")
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -225,6 +225,71 @@ class TestLiveEvents(unittest.TestCase):
         self.assertIsNone(self.manager.open_event_id)
         self.assertEqual(len(self.manager.tracks), 0)
 
+
+    def _manager_with_friendly_slot(self, slot_box, name="Parked Truck"):
+        """EventManager on a camera with one friendly scenery slot."""
+        import json as _json
+        from engine.scenery import SceneryManager
+        self.store.create_vehicle_slot(
+            camera="Camera D", name=name, slot_box=_json.dumps(slot_box),
+            color_name="blue", appearance_sig=_json.dumps({"aspect_ratio": 1.5, "hsv_bins": []}),
+            is_friendly=1,
+        )
+        cam = CameraConfig(name="Camera D", url="", gpu=0, zones=[], slug="Camera_D")
+        manager = EventManager(
+            cam=cam, cfg=self.cfg, store=self.store, notifier=self.notifier,
+            output_dir=self.test_dir, face_engine=None, gallery=None,
+            scenery=SceneryManager(self.store),
+        )
+        return manager
+
+    def test_jittery_parked_vehicle_in_friendly_slot_is_absorbed(self):
+        """Foliage jitter inside an occupied friendly slot must not create events."""
+        # Slot: [0.6, 0.1] -> [0.9, 0.4]; car centred around (0.75, 0.25) of 1920x1080
+        manager = self._manager_with_friendly_slot([0.6, 0.1, 0.9, 0.4])
+        cx, cy = 0.75 * 1920, 0.25 * 1080
+
+        # 60 s of detections whose boxes jump wildly by 150 px (branch flicker /
+        # merged boxes) while the centre stays inside the slot.
+        for i in range(300):
+            now = i * 0.2
+            jitter = 150.0 if i % 2 == 0 else -150.0
+            box = (cx - 80 + jitter, cy - 60, cx + 80 + jitter, cy + 120)
+            det = self._make_det(track_id=1, class_name="truck", frame_idx=i, bbox=box, conf=0.7)
+            manager.process(frame=None, dets=[det], now=now, frame_w=1920, frame_h=1080)
+
+        self.assertIsNone(manager.open_event_id, "parked vehicle in a friendly slot must not open events")
+        self.assertEqual(len(self.notifier.calls), 0)
+
+    def test_passing_vehicle_crossing_a_slot_still_qualifies(self):
+        """Absorption must not hide genuine traffic driving past a parked car."""
+        manager = self._manager_with_friendly_slot([0.6, 0.1, 0.9, 0.4])
+
+        # Parked truck occupies the slot (3+ detections to establish occupancy)
+        for i in range(5):
+            box = (0.75 * 1920 - 80, 0.25 * 1080 - 60, 0.75 * 1920 + 80, 0.25 * 1080 + 120)
+            det = self._make_det(track_id=1, class_name="truck", frame_idx=i, bbox=box, conf=0.7)
+            manager.process(frame=None, dets=[det], now=i * 0.2, frame_w=1920, frame_h=1080)
+
+        # A different car drives across the road, passing through the slot region
+        # and continuing away (10 frames, moving 60 px/frame)
+        for k in range(10):
+            i = 5 + k
+            x = 0.75 * 1920 + (k - 4) * 60.0
+            box = (x - 90, 0.18 * 1080, x + 90, 0.34 * 1080)
+            det = self._make_det(track_id=2, class_name="car", frame_idx=i, bbox=box, conf=0.8)
+            manager.process(frame=None, dets=[det], now=i * 0.2, frame_w=1920, frame_h=1080)
+
+        # Further detections away from the slot -> the transit must qualify
+        for k in range(8):
+            i = 15 + k
+            x = 0.75 * 1920 + 6 * 60.0 + k * 60.0
+            box = (x - 90, 0.18 * 1080, x + 90, 0.34 * 1080)
+            det = self._make_det(track_id=2, class_name="car", frame_idx=i, bbox=box, conf=0.8)
+            manager.process(frame=None, dets=[det], now=i * 0.2, frame_w=1920, frame_h=1080)
+
+        self.assertIsNotNone(manager.open_event_id, "passing traffic must still open an event")
+
     def test_live_only_camera_finalizes_without_clip(self):
         """record=False cameras close as 'finalized' with no clip and no on_closed."""
         cam = CameraConfig(

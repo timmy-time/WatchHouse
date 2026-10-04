@@ -95,6 +95,11 @@ class CameraConfig:
     slug: str = ""
     sub_url: str = ""   # optional DVR substream for the realtime analysis path
     record: bool = True  # False = live inference only: no ring segments, no event clips
+    # Per-camera detection overrides (None = use analysis.* defaults)
+    confidence: Optional[float] = None
+    model: Optional[str] = None
+    imgsz: Optional[int] = None
+    tracker_config: Optional[str] = None
 
 
 @dataclass
@@ -212,6 +217,10 @@ def load_live_config(path: str) -> LiveConfig:
             name=name, url=url, gpu=gpu, zones=zones, slug=slug,
             sub_url=_env_str(c.get("sub_url", "")),
             record=bool(c.get("record", True)),
+            confidence=float(c["confidence"]) if c.get("confidence") is not None else None,
+            model=str(c["model"]) if c.get("model") else None,
+            imgsz=int(c["imgsz"]) if c.get("imgsz") is not None else None,
+            tracker_config=str(c["tracker_config"]) if c.get("tracker_config") else None,
         ))
 
     return LiveConfig(

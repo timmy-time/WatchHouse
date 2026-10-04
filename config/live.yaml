@@ -60,6 +60,8 @@ cameras:
     url: "${CAM_CAMD_URL}"
     sub_url: "${CAM_CAMD_SUB_URL}"
     gpu: 0
+    confidence: 0.20                      # benchmarked: 83% -> 97% on cars behind foliage
+    tracker_config: config/bytetrack_mild.yaml   # long memory, no ID theft on a busy road
     # Live inference only. The camera d produces 1000-2000 events/day, so no
     # ring segments and no event clips are written; events still open/close,
     # notify, and keep a compact 960x540 thumbnail as evidence.
