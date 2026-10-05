@@ -41,6 +41,9 @@ services:
       - CAM_CAMB_URL=${CAM_CAMB_URL:-}
       - CAM_CAMC_URL=${CAM_CAMC_URL:-}
       - CAM_CAMD_URL=${CAM_CAMD_URL:-}
+      - CAM_CAMA_SUB_URL=${CAM_CAMA_SUB_URL:-}
+      - CAM_CAMB_SUB_URL=${CAM_CAMB_SUB_URL:-}
+      - CAM_CAMC_SUB_URL=${CAM_CAMC_SUB_URL:-}
       - CAM_CAMD_SUB_URL=${CAM_CAMD_SUB_URL:-}
       - NTFY_URL=${NTFY_URL:-https://ntfy.sh}
       - NTFY_TOPIC=${NTFY_TOPIC:-}

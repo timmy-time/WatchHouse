@@ -59,6 +59,28 @@ def _parse_track_boxes(r, frame_idx: int) -> List[TrackDetection]:
     return frame_dets
 
 
+def configure_cpu_inference(cpu_threads: int = 0) -> None:
+    """Bound CPU inference to `cpu_threads` torch threads (0 = leave torch's default).
+
+    Process-wide by design: call once per process that runs CPU inference, before
+    the first forward pass. Inter-op threads are pinned to 1 because a single-image
+    forward pass has nothing to parallelise across ops — extra inter-op threads only
+    add scheduling noise and CPU wake-ups.
+    """
+    if cpu_threads <= 0:
+        return
+    try:
+        import torch
+    except ImportError:
+        return
+    torch.set_num_threads(int(cpu_threads))
+    try:
+        torch.set_num_interop_threads(1)
+    except RuntimeError:
+        # Already initialised (e.g. a forward pass ran first); intra-op still applies.
+        pass
+
+
 class ClipDetector:
     """Wrapper around YOLOv8 model for batched inference and video tracking."""
 
@@ -74,7 +96,10 @@ class ClipDetector:
         device: int/str index is passed to Ultralytics (which overwrites
         CUDA_VISIBLE_DEVICES for any non-empty value). Pass "" to let the
         process-pinned CUDA_VISIBLE_DEVICES decide — required for multi-GPU
-        setups where each process owns one GPU.
+        setups where each process owns one GPU. Pass "cpu" for CPU inference:
+        Ultralytics then hides the GPUs in this process, so any ffmpeg child
+        needing GPU decode must be spawned with an explicit CUDA_VISIBLE_DEVICES
+        (see CameraStream) rather than inheriting the mutated environment.
         """
         self.device = device
         self.model_path = model_path

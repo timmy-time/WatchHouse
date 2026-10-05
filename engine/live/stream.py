@@ -69,6 +69,28 @@ class CameraStream:
             return self.cam.sub_url
         return self.cam.url
 
+    def _hwaccel_flags(self) -> List[str]:
+        """ffmpeg hardware-decode flags for this camera.
+
+        With an explicit decode GPU the child is spawned with its own single-entry
+        CUDA_VISIBLE_DEVICES mask, so the visible index is always 0.
+        """
+        index = 0 if self.cam.decode_gpu is not None else int(self.cam.gpu or 0)
+        return ["-hwaccel", "cuda", "-hwaccel_device", str(index)]
+
+    def _decode_env(self) -> Optional[dict]:
+        """Child environment pinning ffmpeg to the decode GPU.
+
+        Ultralytics rewrites CUDA_VISIBLE_DEVICES to -1 in this process when a
+        camera runs CPU inference; giving ffmpeg its own mask keeps GPU decode
+        (and the recording copy path) working regardless.
+        """
+        if self.cam.decode_gpu is None:
+            return None
+        env = dict(os.environ)
+        env["CUDA_VISIBLE_DEVICES"] = str(self.cam.decode_gpu)
+        return env
+
     def probe(self) -> Tuple[int, int]:
         """Probe the analysis stream resolution using ffprobe."""
         cmd = [
@@ -124,7 +146,7 @@ class CameraStream:
         if not self.cam.record:
             cmd += ["-rtsp_transport", "tcp", "-stimeout", "10000000"]
             if hwaccel:
-                cmd += ["-hwaccel", "cuda", "-hwaccel_device", str(self.cam.gpu)]
+                cmd += self._hwaccel_flags()
             cmd += ["-i", self._analysis_url()]
             return cmd + pipe_args
 
@@ -143,7 +165,7 @@ class CameraStream:
         if self.cam.sub_url and not self.sub_failed:
             # --- Dual input: analysis on substream, recording on main ---
             if hwaccel:
-                cmd += ["-hwaccel", "cuda", "-hwaccel_device", str(self.cam.gpu)]
+                cmd += self._hwaccel_flags()
             cmd += [
                 "-rtsp_transport", "tcp", "-stimeout", "10000000",
                 "-i", self.cam.sub_url,
@@ -158,7 +180,7 @@ class CameraStream:
         # --- Single input: same stream for recording and analysis ---
         cmd += ["-rtsp_transport", "tcp", "-stimeout", "10000000"]
         if hwaccel:
-            cmd += ["-hwaccel", "cuda", "-hwaccel_device", str(self.cam.gpu)]
+            cmd += self._hwaccel_flags()
         cmd += [
             "-i", self.cam.url,
             "-map", "0:v:0", "-map", "0:a:0?",
@@ -188,6 +210,7 @@ class CameraStream:
                     stdout=subprocess.PIPE,
                     stderr=subprocess.PIPE,
                     bufsize=10 * 1024 * 1024,
+                    env=self._decode_env() if self.use_hwaccel else None,
                 )
             except Exception as exc:
                 self.last_error = str(exc)

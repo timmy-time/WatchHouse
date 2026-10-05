@@ -1,6 +1,7 @@
 """Configuration models and loader for live CCTV analytics."""
 
 from dataclasses import dataclass, field
+import logging
 import os
 import re
 from typing import Any, Dict, List, Optional, Tuple
@@ -9,6 +10,8 @@ import yaml
 
 from engine.behavior import Zone
 from engine.live.dynamic_fps import DynamicFpsConfig
+
+logger = logging.getLogger(__name__)
 
 
 def _env_str(val: Any) -> str:
@@ -47,6 +50,12 @@ class AnalysisConfig:
     # Dual-GPU roles
     realtime_gpu: int = 0          # fast path: all camera workers
     detailed_gpu: int = 1          # slow path: detailed verifier
+    # Inference device per role: "auto"/"gpu" = use the role's GPU above,
+    # "cpu" = run that role's YOLO inference on the CPU (ffmpeg decode stays
+    # on the GPU, chosen by the per-camera gpu below).
+    realtime_device: str = "auto"
+    detailed_device: str = "auto"
+    cpu_threads: int = 0           # torch intra-op threads for CPU inference (0 = torch default)
     detailed_model: str = "yolov8s.pt"
     detailed_imgsz: int = 1280
     detailed_conf: float = 0.25
@@ -95,11 +104,33 @@ class CameraConfig:
     slug: str = ""
     sub_url: str = ""   # optional DVR substream for the realtime analysis path
     record: bool = True  # False = live inference only: no ring segments, no event clips
+    # Physical GPU used for ffmpeg decode (set by run_live); None = inherit the
+    # process's CUDA_VISIBLE_DEVICES and use `gpu` as the visible index.
+    decode_gpu: Optional[int] = None
     # Per-camera detection overrides (None = use analysis.* defaults)
     confidence: Optional[float] = None
     model: Optional[str] = None
     imgsz: Optional[int] = None
     tracker_config: Optional[str] = None
+    device: Optional[str] = None   # "auto" | "gpu" | "cpu" — overrides analysis.realtime_device
+
+
+def resolve_inference_device(spec: Optional[str], default: str = "auto") -> str:
+    """Map a config value to the actual inference device: "cpu" or "gpu".
+
+    "auto" (or an unset value) defers to the role default; the default itself being
+    "auto" keeps the pre-existing behaviour of running inference on the GPU the role
+    is pinned to. Anything unrecognised falls back to the GPU with a warning.
+    """
+    value = str(spec).strip().lower() if spec is not None else ""
+    if value in ("", "auto"):
+        return "cpu" if str(default or "").strip().lower() == "cpu" else "gpu"
+    if value == "cpu":
+        return "cpu"
+    if value in ("gpu", "cuda"):
+        return "gpu"
+    logger.warning("unknown inference device %r: falling back to the GPU", spec)
+    return "gpu"
 
 
 @dataclass
@@ -137,6 +168,9 @@ def load_live_config(path: str) -> LiveConfig:
         imgsz=int(ana_raw.get("imgsz", 640)),
         realtime_gpu=int(ana_raw.get("realtime_gpu", 0)),
         detailed_gpu=int(ana_raw.get("detailed_gpu", 1)),
+        realtime_device=str(ana_raw.get("realtime_device", "auto")),
+        detailed_device=str(ana_raw.get("detailed_device", "auto")),
+        cpu_threads=int(ana_raw.get("cpu_threads", 0)),
         detailed_model=str(ana_raw.get("detailed_model", "yolov8s.pt")),
         detailed_imgsz=int(ana_raw.get("detailed_imgsz", 1280)),
         detailed_conf=float(ana_raw.get("detailed_conf", 0.25)),
@@ -221,6 +255,7 @@ def load_live_config(path: str) -> LiveConfig:
             model=str(c["model"]) if c.get("model") else None,
             imgsz=int(c["imgsz"]) if c.get("imgsz") is not None else None,
             tracker_config=str(c["tracker_config"]) if c.get("tracker_config") else None,
+            device=str(c["device"]) if c.get("device") else None,
         ))
 
     return LiveConfig(

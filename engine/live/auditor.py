@@ -22,7 +22,7 @@ import os
 import queue
 import threading
 import time
-from typing import Dict, List, Optional, Set
+from typing import Dict, List, Optional, Set, Union
 
 import numpy as np
 
@@ -116,29 +116,37 @@ class VerifierCore:
         conf_threshold: float,
         notify_classes: Set[str],
         idle_unload_seconds: float = 600.0,
+        cpu_inference: bool = False,
+        cpu_threads: int = 0,
     ):
         self.model_name = model_name
         self.imgsz = imgsz
         self.conf_threshold = conf_threshold
         self.notify_classes = notify_classes
         self.idle_unload_seconds = idle_unload_seconds
+        self.cpu_inference = cpu_inference
+        self.cpu_threads = cpu_threads
         self.detector = None
         self.last_work_time = time.time()
 
     # --- model lifecycle ---
 
     def ensure_detector(self) -> bool:
-        """Load the detector on the process's (already pinned) visible GPU."""
+        """Load the detector on the process's (already pinned) visible GPU, or on the CPU."""
         if self.detector is not None:
             return True
         try:
-            from engine.detector import ClipDetector
+            from engine.detector import ClipDetector, configure_cpu_inference
+            if self.cpu_inference:
+                configure_cpu_inference(self.cpu_threads)
             self.detector = ClipDetector(
-                model_path=self.model_name, device="", imgsz=self.imgsz
+                model_path=self.model_name,
+                device="cpu" if self.cpu_inference else "",
+                imgsz=self.imgsz,
             )
             logger.info(
                 f"DetailedVerifier core ready: {self.model_name} @ {self.imgsz}px "
-                f"(CUDA_VISIBLE_DEVICES={os.environ.get('CUDA_VISIBLE_DEVICES')})"
+                f"({'CPU' if self.cpu_inference else 'CUDA_VISIBLE_DEVICES=' + str(os.environ.get('CUDA_VISIBLE_DEVICES'))})"
             )
             return True
         except Exception as exc:
@@ -241,8 +249,11 @@ class VerifierCore:
 
 
 def _child_main(cfg: dict, in_q, out_q) -> None:
-    """Spawned-process entry: pin the GPU *before* any CUDA call."""
-    os.environ["CUDA_VISIBLE_DEVICES"] = str(cfg["physical_device"])
+    """Spawned-process entry: pin the GPU *before* any CUDA call (unless running on CPU)."""
+    if cfg.get("cpu_inference"):
+        os.environ.pop("CUDA_VISIBLE_DEVICES", None)
+    else:
+        os.environ["CUDA_VISIBLE_DEVICES"] = str(cfg["physical_device"])
     logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] (%(name)s) %(message)s")
     core = VerifierCore(
         model_name=cfg["model_name"],
@@ -250,6 +261,8 @@ def _child_main(cfg: dict, in_q, out_q) -> None:
         conf_threshold=cfg["conf_threshold"],
         notify_classes=set(cfg["notify_classes"]),
         idle_unload_seconds=cfg["idle_unload_seconds"],
+        cpu_inference=bool(cfg.get("cpu_inference")),
+        cpu_threads=int(cfg.get("cpu_threads", 0)),
     )
     core.run(in_q, out_q)
 
@@ -262,13 +275,14 @@ class DetailedVerifier:
         store,
         output_dir: str,
         model_name: str = "yolov8s.pt",
-        device: int = 1,
+        device: Union[int, str] = 1,
         imgsz: int = 1280,
         conf_threshold: float = 0.25,
         notify_classes: Optional[Set[str]] = None,
         notifier=None,
         idle_unload_seconds: float = 600.0,
         queue_size: int = 8,
+        cpu_threads: int = 0,
         # test hook: run inference in-process instead of spawning
         inject_core: Optional[VerifierCore] = None,
     ):
@@ -276,6 +290,7 @@ class DetailedVerifier:
         self.output_dir = output_dir
         self.model_name = model_name
         self.device = device
+        self.cpu_threads = cpu_threads
         self.imgsz = imgsz
         self.conf_threshold = conf_threshold
         self.notify_classes = notify_classes or {"person", "dog", "cat", "bear", "horse", "cow", "sheep"}
@@ -306,6 +321,8 @@ class DetailedVerifier:
         if self._core is None:
             cfg = {
                 "physical_device": self.device,
+                "cpu_inference": self.device == "cpu",
+                "cpu_threads": self.cpu_threads,
                 "model_name": self.model_name,
                 "imgsz": self.imgsz,
                 "conf_threshold": self.conf_threshold,
@@ -320,7 +337,8 @@ class DetailedVerifier:
                 self._proc.start()
                 logger.info(
                     f"DetailedVerifier child started (pid {self._proc.pid}) "
-                    f"-> GPU {self.device} ({self.model_name} @ {self.imgsz}px)"
+                    f"-> {'CPU' if self.device == 'cpu' else f'GPU {self.device}'} "
+                    f"({self.model_name} @ {self.imgsz}px)"
                 )
             except Exception as exc:
                 logger.error(f"DetailedVerifier failed to spawn child: {exc}")

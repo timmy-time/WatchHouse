@@ -14,6 +14,17 @@ analysis:
   # Dual-GPU split: GPU 0 realtime (all cameras), GPU 1 detailed verification
   realtime_gpu: 0
   detailed_gpu: 1
+  # Where YOLO runs. "auto"/"gpu" = on the GPU above; "cpu" = on the CPU.
+  # ffmpeg still decodes on the GPU either way: every ffmpeg child is spawned with
+  # its own CUDA_VISIBLE_DEVICES pointing at realtime_gpu, so hardware decode keeps
+  # working even though CPU inference makes Ultralytics hide the GPUs in-process.
+  # A camera can override with `device: cpu|gpu|auto` in its own block.
+  realtime_device: auto
+  detailed_device: auto
+  # torch intra-op threads for CPU inference (0 = torch's default). One thread is
+  # enough to keep up with a few cameras at the idle frame rate; raise it only if
+  # measured fps_analyzed falls behind the target.
+  cpu_threads: 2
   detailed_model: yolov8s.pt
   detailed_imgsz: 1280
   detailed_conf: 0.25

@@ -10,10 +10,10 @@ import time
 import traceback
 from typing import Any, Dict, List, Optional
 
-from engine.detector import ClipDetector
+from engine.detector import ClipDetector, configure_cpu_inference
 from engine.faces import FaceEngine, FaceGallery
 from engine.live.clipper import Finalizer
-from engine.live.config import CameraConfig, LiveConfig, load_live_config
+from engine.live.config import CameraConfig, LiveConfig, load_live_config, resolve_inference_device
 from engine.live.db import EventStore
 from engine.live.events import EventManager
 from engine.live.notify import Notifier
@@ -116,9 +116,13 @@ class CameraWorker(threading.Thread):
         self.imgsz = cam.imgsz or cfg.analysis.imgsz
         self.conf_threshold = cam.confidence if cam.confidence is not None else cfg.analysis.confidence
         self.tracker_config = _resolve_tracker_config(cfg, cam)
+        # "cpu" runs YOLO on the CPU; ffmpeg decode stays on the GPU (cam.gpu).
+        self.inference_device = resolve_inference_device(cam.device, cfg.analysis.realtime_device)
+        if self.inference_device == "cpu":
+            configure_cpu_inference(cfg.analysis.cpu_threads)
         self.detector = ClipDetector(
             model_path=self.model_path,
-            device="",  # pinning is done via CUDA_VISIBLE_DEVICES at process start
+            device="cpu" if self.inference_device == "cpu" else "",  # GPU pinning is done via CUDA_VISIBLE_DEVICES at process start
             imgsz=self.imgsz,
             tracker_config=self.tracker_config,
         )
@@ -167,7 +171,10 @@ class CameraWorker(threading.Thread):
             logger.debug(f"{self.cam.name}: detections write failed: {exc}")
 
     def run(self) -> None:
-        logger.info(f"{self.cam.name}: Starting camera worker on GPU {self.cam.gpu}")
+        logger.info(
+            f"{self.cam.name}: Starting camera worker "
+            f"(inference={self.inference_device}, decode_gpu={self.cam.gpu})"
+        )
         self.stream.start()
         if self.finalizer is not None:
             self.finalizer.start()
@@ -276,7 +283,9 @@ class CameraWorker(threading.Thread):
                     self.stream = CameraStream(self.cam, self.cfg.recording, fps=self.cfg.analysis.fps)
                     self.stream.start()
                     self.detector = ClipDetector(
-                        model_path=self.model_path, device="", imgsz=self.imgsz,
+                        model_path=self.model_path,
+                        device="cpu" if self.inference_device == "cpu" else "",
+                        imgsz=self.imgsz,
                         tracker_config=self.tracker_config,
                     )
                 except Exception as rebuild_exc:
@@ -300,16 +309,6 @@ def run_live(config_path: str, output_dir: str) -> int:
     logger.info(f"Loading live configuration from {config_path}")
     cfg = load_live_config(config_path)
 
-    # Pin this process to the realtime GPU *before* any CUDA call. Ultralytics'
-    # select_device rewrites CUDA_VISIBLE_DEVICES per call, so the only reliable
-    # multi-GPU strategy is one process per role: this process = realtime GPU
-    # (all workers use visible device 0), the verifier child = detailed GPU.
-    os.environ["CUDA_VISIBLE_DEVICES"] = str(cfg.analysis.realtime_gpu)
-    logger.info(
-        f"Realtime process pinned to GPU {cfg.analysis.realtime_gpu} "
-        f"(CUDA_VISIBLE_DEVICES={os.environ['CUDA_VISIBLE_DEVICES']})"
-    )
-
     active_cams = [c for c in cfg.cameras if c.url]
     for c in cfg.cameras:
         if not c.url:
@@ -318,6 +317,25 @@ def run_live(config_path: str, output_dir: str) -> int:
     if not active_cams:
         print("No cameras configured (set CAM_*_URL)")
         return 1
+
+    # Pin this process to the realtime GPU *before* any CUDA call. Ultralytics'
+    # select_device rewrites CUDA_VISIBLE_DEVICES per call, so the only reliable
+    # multi-GPU strategy is one process per role: this process = realtime GPU
+    # (all workers use visible device 0), the verifier child = detailed GPU.
+    # Cameras configured for CPU inference do not need the realtime GPU visible;
+    # their ffmpeg children are pinned to the decode GPU explicitly.
+    camera_devices = {
+        cam.name: resolve_inference_device(cam.device, cfg.analysis.realtime_device)
+        for cam in active_cams
+    }
+    if any(dev == "gpu" for dev in camera_devices.values()):
+        os.environ["CUDA_VISIBLE_DEVICES"] = str(cfg.analysis.realtime_gpu)
+        logger.info(
+            f"Realtime process pinned to GPU {cfg.analysis.realtime_gpu} "
+            f"(CUDA_VISIBLE_DEVICES={os.environ['CUDA_VISIBLE_DEVICES']})"
+        )
+    else:
+        logger.info("All cameras run CPU inference: realtime process left unpinned")
 
     live_dir = os.path.join(output_dir, "live")
     os.makedirs(live_dir, exist_ok=True)
@@ -338,9 +356,10 @@ def run_live(config_path: str, output_dir: str) -> int:
     # This process is pinned to the realtime GPU (visible device 0). The verifier
     # child pins itself to the detailed GPU. Same index => single-GPU mode.
     realtime_device = 0  # visible index inside this process (pinned to the realtime GPU)
-    detailed_physical = cfg.analysis.detailed_gpu
+    detailed_setting = resolve_inference_device(cfg.analysis.detailed_device)
+    detailed_physical = "cpu" if detailed_setting == "cpu" else cfg.analysis.detailed_gpu
     realtime_physical = cfg.analysis.realtime_gpu
-    if realtime_physical == detailed_physical:
+    if detailed_setting == "gpu" and realtime_physical == cfg.analysis.detailed_gpu:
         logger.warning(
             "realtime_gpu == detailed_gpu (%s): single-GPU mode, expect contention",
             realtime_physical,
@@ -355,10 +374,11 @@ def run_live(config_path: str, output_dir: str) -> int:
         conf_threshold=cfg.analysis.detailed_conf,
         notify_classes=set(cfg.notifications.notify_classes),
         notifier=notifier,
+        cpu_threads=cfg.analysis.cpu_threads,
     )
     verifier.start()
     logger.info(
-        f"DetailedVerifier launched on physical GPU {detailed_physical} "
+        f"DetailedVerifier launched on {('CPU' if detailed_setting == 'cpu' else f'physical GPU {detailed_physical}')} "
         f"({cfg.analysis.detailed_model} @ {cfg.analysis.detailed_imgsz}px)"
     )
 
@@ -366,9 +386,13 @@ def run_live(config_path: str, output_dir: str) -> int:
     workers: List[CameraWorker] = []
 
     for cam in active_cams:
-        # All realtime work uses visible device 0 in this process (pinned to realtime GPU).
+        # ffmpeg decodes on the realtime GPU regardless of where inference runs; the
+        # ffmpeg child gets an explicit CUDA_VISIBLE_DEVICES for it (stream._decode_env).
+        cam.decode_gpu = cfg.analysis.realtime_gpu
+        # All GPU inference work uses visible device 0 in this process (pinned to realtime GPU).
         cam.gpu = realtime_device
-        gpu_scheduler.assign_camera(cam.name, realtime_device)
+        if camera_devices[cam.name] == "gpu":
+            gpu_scheduler.assign_camera(cam.name, realtime_device)
 
     for cam in active_cams:
         face_engine = None
@@ -419,6 +443,7 @@ def run_live(config_path: str, output_dir: str) -> int:
                         "slug": w.cam.slug,
                         **w.stream.status(),
                         "gpu": w.cam.gpu,
+                        "inference_device": w.inference_device,
                         "record": w.cam.record,
                         "mode": w.fps_controller.current_mode,
                         "target_fps": (
