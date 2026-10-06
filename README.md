@@ -2,7 +2,9 @@
 
 AI-powered video intelligence that watches your live camera feeds and saved footage, keeping what matters.
 
-WatchHouse is a self-hosted, privacy-first video intelligence engine for IP cameras. It analyses both live RTSP streams and archived clip directories on hardware you already own: nothing leaves your network, and there is no cloud service, account, or telemetry. Its job is to separate genuine events — people, animals, moving vehicles — from the constant noise that fills up a security archive, so the clips worth keeping are the only ones you see.
+WatchHouse is a self-hosted, privacy-first video intelligence engine for IP cameras and NVRs. It analyses both live RTSP streams and archived clip directories on hardware you already own: nothing leaves your network, and there is no cloud service, account, or telemetry. Its job is to separate genuine events — people, animals, moving vehicles — from the constant noise that fills up a security archive, so the clips worth keeping are the only ones you see.
+
+Originally engineered and tuned for **Swann NVR and DVR security systems** (utilising their standard multi-channel RTSP main/sub streams and exported clip archives), WatchHouse is completely camera-agnostic and supports **any IP camera, NVR, DVR, or encoder that outputs standard RTSP (H.264 or H.265 over TCP)**, including Reolink, Dahua, Hikvision, UniFi, Amcrest, and ONVIF devices.
 
 The core problem it solves is parked cars. A camera pointed at a parking area records a vehicle sitting still for hours, and every spiderweb, headlight sweep, wind gust and IR glare starts another "event". WatchHouse tracks objects across frames and scores their kinematics, so a car that never moves is discarded while a car that pulls away is kept.
 
@@ -16,7 +18,7 @@ The core problem it solves is parked cars. A camera pointed at a parking area re
 - **Scales across one or more GPUs.** Worker processes are partitioned across every GPU you provide, with a CPU fallback when CUDA is unavailable, so throughput grows with the hardware you have rather than assuming a fixed configuration.
 - **Two pipelines, one engine.** The same detector and classifier drive a batch pipeline over recorded clips and a live RTSP pipeline that analyses, records, and raises events as they happen.
 - **A web dashboard, not just a report file.** Live view with MJPEG preview, an archive browsable by camera, event class and date, plus scenery/vehicle-slot registration so static objects can be absorbed instead of re-alerting.
-- **Optional remote inference offload.** Move per-frame detection to a machine with a supported GPU — including a Windows/WSL2 host — while the camera server keeps decoding, recording and serving the dashboard.
+- **Quiet server mode & remote inference offload.** Split compute across a master/worker topology: let a headless master server ingest streams, record, and host the UI whisper-quiet, while offloading GPU tensor passes over the LAN to a desktop PC with a consumer GPU (e.g. GTX 1650 Super, RTX cards, or WSL2). Server fan noise stays down; inference stays fast.
 
 ---
 
@@ -210,7 +212,7 @@ In Docker Compose the `web` service runs this command and publishes it on host p
 
 ### `infer-server` — remote inference endpoint
 
-Serve YOLO inference over HTTP so another machine can offload its per-frame detection.
+Serve YOLO inference over HTTP so another machine can offload its per-frame detection. In Docker Compose, run this standalone on a worker node with `docker compose --profile worker up -d infer-server`.
 
 ```bash
 python3 main.py infer-server --host 0.0.0.0 --port 8099 --device 0
@@ -317,23 +319,66 @@ Events are dispatched to:
 
 ---
 
-## Remote Inference Offload
+## Master / Worker Topology & Remote Inference ("Quiet Server" Mode)
 
-The live pipeline can send its per-frame YOLO work to another machine, so the camera server only decodes, tracks events, records and serves the dashboard. Frames travel as JPEG and tracked boxes come back, with one tracker session per camera on the remote side.
+In homelab or small-office environments, enterprise rack servers equipped with passive or blower-cooled accelerator cards (such as dual Tesla P4 or Tesla P40 GPUs) ramp their small chassis fans aggressively under continuous multi-camera tensor compute loads.
 
-This is useful when the camera server has no GPU (or a weak one) but another machine on the network does — including a Windows host running WSL2.
+WatchHouse supports an asymmetric **Master / Worker** topology that keeps the server room quiet without sacrificing GPU inference speed:
 
-### 1. On the machine with the GPU
+- **Master Node (Camera Server):** Handles RTSP stream ingest via FFmpeg, continuous video segment recording (`-c copy` with negligible CPU/GPU overhead), event state management, SQLite storage, push notifications, and the web UI. Because no heavy neural network forward passes run on this box, CPU and GPU utilization sit near idle, thermal load is minimal, and the server stays whisper-quiet.
+- **Worker Node (Desktop PC):** Runs `main.py infer-server` on port 8099, utilizing a consumer GPU (such as a GTX 1650 Super, RTX 3060, or better) with quiet desktop cooling fans. It receives JPEG frames over the local network via HTTP `/track`, executes YOLOv8 detection + ByteTrack tracking, and returns tracked bounding boxes.
+
+```text
+IP Cameras / NVR (e.g. Swann)
+     │ (RTSP streams)
+     ▼
+┌────────────────────────────────────────────────────────┐
+│                 Master Server Node                     │
+│  • FFmpeg stream ingestion (main & substreams)         │
+│  • Continuous ring recording (-c copy, low CPU/GPU)    │
+│  • Event state machine & SQLite database               │
+│  • Web Dashboard & Archive UI (port 18080)             │
+│  • Whisper-quiet: zero heavy tensor compute            │
+└──────────────────────────┬─────────────────────────────┘
+                           │
+          HTTP POST /track │ (JPEG frame ~45 KB)
+                           ▼
+┌────────────────────────────────────────────────────────┐
+│         Worker Node (e.g. Desktop PC w/ GPU)           │
+│  • Runs `infer-server` on port 8099                    │
+│  • YOLOv8 detection + ByteTrack tracking               │
+│  • Quiet consumer GPU cooling (e.g. GTX 1650 Super)    │
+└──────────────────────────┬─────────────────────────────┘
+                           │
+          JSON response    │ (tracked boxes, class, conf)
+                           ▼
+[ Master Server receives detections & updates state ]
+```
+
+### Resilience & Graceful Degradation
+
+If the worker PC is shut down, reboots, or goes to sleep, the master server **never drops camera connections or halts video recording**. Recording continues uninterrupted with zero data loss. The inference client returns empty detections, throttles warning logs to once every 20 seconds, and tracks retry metrics in `output/live/status.json`. The moment the worker node comes back online, live object detection resumes automatically.
+
+### 1. On the Worker Node (Desktop PC with NVIDIA GPU)
+
+Run natively on Windows/WSL2 or Linux:
 
 ```bash
 git clone <this repo> && cd WatchHouse
 python3 -m venv .venv && . .venv/bin/activate
 pip install -r requirements.txt
 python main.py infer-server --host 0.0.0.0 --port 8099 --device 0
-curl http://localhost:8099/health
 ```
 
-Model weights download on first use (`yolov8n.pt`), or copy existing `.pt` files across. On Windows, add an inbound firewall rule for TCP 8099. If the GPU host runs inside WSL2, the LAN also needs a port proxy to reach the NAT'd WSL VM:
+Or run via Docker Compose on the worker node:
+
+```bash
+docker compose --profile worker up -d infer-server
+```
+
+Model weights download on first use (`yolov8n.pt`), or copy existing `.pt` files across into `models/`.
+
+**Windows / WSL2 networking:** If the worker runs on Windows, allow inbound traffic on TCP 8099. If running inside WSL2, the LAN also needs a port proxy to reach the NAT'd WSL VM:
 
 ```powershell
 netsh interface portproxy add v4tov4 listenport=8099 listenaddress=0.0.0.0 `
@@ -341,27 +386,39 @@ netsh interface portproxy add v4tov4 listenport=8099 listenaddress=0.0.0.0 `
 netsh advfirewall firewall add rule name="WatchHouse infer" dir=in action=allow protocol=TCP localport=8099
 ```
 
-### 2. On the camera server
+Test connectivity from the master server or another LAN machine:
 
-Point the analysis at the remote host in `config/live.yaml`:
+```bash
+curl http://<worker-ip>:8099/health
+# Returns: {"ok": true, "device": "0", "sessions": 0, "session_names": []}
+```
+
+### 2. On the Master Node (Camera Server)
+
+Configure the master server to offload inference by setting environment variables in `.env`:
+
+```bash
+REALTIME_DEVICE=remote
+DETAILED_DEVICE=remote
+REMOTE_INFER_URL=http://<worker-ip>:8099
+```
+
+Or edit `config/live.yaml` directly:
 
 ```yaml
 analysis:
   realtime_device: remote                    # or per camera: device: remote
-  remote_url: "http://<remote-host>:8099"
+  remote_url: "http://<worker-ip>:8099"
   remote_timeout: 10.0
   remote_jpeg_quality: 80
-  detailed_device: remote                    # optional: move the detailed verifier too
+  detailed_device: remote                    # offloads detailed verification model too
 ```
-
-Both the realtime cameras and the detailed verifier can be offloaded.
 
 ### 3. Verify
 
-Startup logs report the inference backend, and `output/live/status.json` carries per-camera `inference_stats` (calls, errors, average round-trip milliseconds).
+Startup logs will confirm the remote inference endpoint. Live stats are continuously updated in `output/live/status.json`, including per-camera `inference_stats` (call counts, round-trip milliseconds, and errors).
 
-**Notes.** Each frame is roughly 35–55 KB at 704×396 with `remote_jpeg_quality: 80` — on the order of 0.5 MB/s per camera at 15 fps, so a fast LAN is fine but a congested Wi-Fi link is not. If the remote host is unreachable or slower than the frame rate, frames keep decoding and the camera simply analyses fewer of them: the client returns no detections, logs one warning every 20 seconds, and counts the failures in the status file. Nothing else stalls.
-
+**Bandwidth:** Each frame is roughly 35–55 KB at 704×396 with `remote_jpeg_quality: 80` (~0.5 MB/s per camera at 15 fps). Standard gigabit LAN or 5 GHz Wi-Fi easily handles multiple cameras concurrently.
 ---
 
 ## Testing

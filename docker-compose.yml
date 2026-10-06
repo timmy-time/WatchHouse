@@ -54,6 +54,9 @@ services:
       - NTFY_TOKEN=${NTFY_TOKEN:-}
       - WEBHOOK_URL=${WEBHOOK_URL:-}
       - DASHBOARD_URL=${DASHBOARD_URL:-http://localhost:8080}
+      - REALTIME_DEVICE=${REALTIME_DEVICE:-auto}
+      - DETAILED_DEVICE=${DETAILED_DEVICE:-auto}
+      - REMOTE_INFER_URL=${REMOTE_INFER_URL:-}
     command: ["live", "--config", "/app/config/live.yaml", "--output", "/data/output"]
 
   web:
@@ -98,3 +101,20 @@ services:
         /usr/bin/ffmpeg -hide_banner -loglevel error -re -stream_loop -1 -i "$CAM_SIM_A" -map 0:v -c copy -f rtsp -rtsp_transport tcp rtsp://rtsp-sim:8554/camera_a &
         /usr/bin/ffmpeg -hide_banner -loglevel error -re -stream_loop -1 -i "$CAM_SIM_B" -map 0:v -c copy -f rtsp -rtsp_transport tcp rtsp://rtsp-sim:8554/camera_b &
         wait
+
+  infer-server:
+    profiles: ["worker"]
+    build: .
+    restart: unless-stopped
+    ports:
+      - "8099:8099"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    environment:
+      - YOLO_CONFIG_DIR=/tmp/Ultralytics
+    command: ["infer-server", "--host", "0.0.0.0", "--port", "8099", "--device", "0"]

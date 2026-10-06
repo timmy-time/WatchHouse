@@ -31,13 +31,13 @@ analysis:
   # ffmpeg always decodes on the GPU: every ffmpeg child is spawned with its own
   # CUDA_VISIBLE_DEVICES pointing at realtime_gpu, so hardware decode keeps working
   # even when inference is CPU-side or fully off-box.
-  realtime_device: auto
-  detailed_device: auto
+  realtime_device: "${REALTIME_DEVICE:-auto}"
+  detailed_device: "${DETAILED_DEVICE:-auto}"
   # Remote inference host (device: "remote"). Run the other side with:
   #   python main.py infer-server --host 0.0.0.0 --port 8099 --device 0
   # Frames are sent as JPEG and tracked boxes come back; each camera keeps its own
   # tracker session remotely. Set this to e.g. http://<windows-or-wsl-lan-ip>:8099
-  remote_url: ""
+  remote_url: "${REMOTE_INFER_URL:-}"
   remote_timeout: 10.0
   remote_jpeg_quality: 80
   # torch intra-op threads for CPU inference (0 = torch's default). One thread is
