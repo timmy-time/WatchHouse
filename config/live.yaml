@@ -67,26 +67,26 @@ notifications:
   ntfy: {url: "${NTFY_URL}", topic: "${NTFY_TOPIC}", token: "${NTFY_TOKEN}"}
   webhook: {url: "${WEBHOOK_URL}"}
 cameras:
-  - name: Camera A
+  - name: "${CAM_A_NAME:-Camera A}"
     url: "${CAM_A_URL}"
     sub_url: "${CAM_A_SUB_URL}"
     gpu: 0
     zones:
       - {name: property, type: entry, polygon: [[0.12, 0.30], [1.0, 0.30], [1.0, 1.0], [0.05, 1.0]]}
       - {name: engine_pile, type: ignore, polygon: [[0.65, 0.55], [1.0, 0.55], [1.0, 1.0], [0.65, 1.0]]}
-  - name: Camera B
+  - name: "${CAM_B_NAME:-Camera B}"
     url: "${CAM_B_URL}"
     sub_url: "${CAM_B_SUB_URL}"
     gpu: 0
     zones:
       - {name: lawn, type: entry, polygon: [[0.0, 0.46], [0.80, 0.46], [0.80, 1.0], [0.0, 1.0]]}
-  - name: Camera C
+  - name: "${CAM_C_NAME:-Camera C}"
     url: "${CAM_C_URL}"
     sub_url: "${CAM_C_SUB_URL}"
     gpu: 0
     zones:
       - {name: porch, type: entry, polygon: [[0.20, 0.60], [0.60, 0.60], [0.60, 1.0], [0.20, 1.0]]}
-  - name: Camera D
+  - name: "${CAM_D_NAME:-Camera D}"
     url: "${CAM_D_URL}"
     sub_url: "${CAM_D_SUB_URL}"
     gpu: 0

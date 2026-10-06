@@ -214,6 +214,53 @@ cameras:
         by_name = {c.name: c for c in cfg.cameras}
         self.assertTrue(by_name["Camera A"].record)      # default is recording
         self.assertFalse(by_name["Camera D"].record)    # live-only
+    def test_camera_name_env_interpolation(self):
+        path = self._write(
+            """
+cameras:
+  - name: "${CAM_TEST_NAME:-Default Camera}"
+    url: "rtsp://dvr/main"
+"""
+        )
+        # When env var is not set -> defaults to "Default Camera"
+        os.environ.pop("CAM_TEST_NAME", None)
+        cfg1 = load_live_config(path)
+        self.assertEqual(cfg1.cameras[0].name, "Default Camera")
+        self.assertEqual(cfg1.cameras[0].slug, "Default_Camera")
+
+        # When env var is set -> resolves to the env var value
+        os.environ["CAM_TEST_NAME"] = "Custom Name"
+        try:
+            cfg2 = load_live_config(path)
+            self.assertEqual(cfg2.cameras[0].name, "Custom Name")
+            self.assertEqual(cfg2.cameras[0].slug, "Custom_Name")
+        finally:
+            os.environ.pop("CAM_TEST_NAME", None)
+
+    def test_local_config_override_takes_precedence(self):
+        path = self._write(
+            """
+cameras:
+  - name: Base Camera
+    url: "rtsp://dvr/base"
+"""
+        )
+        local_path = path.replace(".yaml", ".local.yaml")
+        with open(local_path, "w") as fh:
+            fh.write(
+                """
+cameras:
+  - name: Local Camera
+    url: "rtsp://dvr/local"
+"""
+            )
+        try:
+            cfg = load_live_config(path)
+            self.assertEqual(cfg.cameras[0].name, "Local Camera")
+            self.assertEqual(cfg.cameras[0].url, "rtsp://dvr/local")
+        finally:
+            if os.path.exists(local_path):
+                os.unlink(local_path)
 
 
 class TestInferenceDeviceResolution(unittest.TestCase):

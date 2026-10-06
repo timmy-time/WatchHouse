@@ -14,15 +14,23 @@ from engine.live.dynamic_fps import DynamicFpsConfig
 logger = logging.getLogger(__name__)
 
 
-def _env_str(val: Any) -> str:
-    """Expand environment variables; if unresolved '${VAR}' remains or None, return empty string."""
+def _env_str(val: Any, default: str = "") -> str:
+    """Expand environment variables supporting ${VAR:-default}, ${VAR}, and $VAR."""
     if val is None:
-        return ""
+        return default
     s = str(val)
+
+    def _repl(m: Any) -> str:
+        var = m.group(1)
+        fallback = m.group(2) if m.group(2) is not None else ""
+        return os.environ.get(var, fallback)
+
+    s = re.sub(r"\$\{([A-Za-z0-9_]+)(?::-([^}]*))?\}", _repl, s)
     s = os.path.expandvars(s)
     if "${" in s:
-        return ""
-    return s.strip()
+        return default
+    s = s.strip()
+    return s if s else default
 
 
 def slugify(name: str) -> str:
@@ -164,7 +172,18 @@ class LiveConfig:
 
 
 def load_live_config(path: str) -> LiveConfig:
-    """Load and validate live configuration from YAML file."""
+    """Load and validate live configuration from YAML file.
+
+    If a local override file exists alongside `path` (e.g. `live.local.yaml`),
+    it is preferred over the base template, allowing full per-host customization
+    without modifying tracked files or leaking private configurations.
+    """
+    base, ext = os.path.splitext(path)
+    local_path = f"{base}.local{ext}"
+    if os.path.exists(local_path):
+        logger.info("Using local configuration override: %s", local_path)
+        path = local_path
+
     if not os.path.exists(path):
         raise FileNotFoundError(f"Configuration file not found: {path}")
 
@@ -252,7 +271,7 @@ def load_live_config(path: str) -> LiveConfig:
 
     cameras: List[CameraConfig] = []
     for c in raw.get("cameras", []):
-        name = str(c.get("name", "Camera"))
+        name = _env_str(c.get("name"), default="Camera")
         url = _env_str(c.get("url", ""))
         gpu_raw = c.get("gpu")
         if gpu_raw is None or str(gpu_raw).lower() in ("auto", "none"):

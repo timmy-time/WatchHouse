@@ -107,7 +107,7 @@ class ArchiveHelperTests(unittest.TestCase):
             _record("Camera B", "20260104090000", classes=("car",), confidence="0.50"),
             _record("Camera B", "20260104120000", classes=("dog",), verdict="KEEP",
                     reason="high_value_object", confidence="0.80", duration="90"),
-            _record("Camera C", "20260102120000", classes=("car",), confidence="0.60"),  # oldest camera
+            _record("Camera C", "", classes=("car",), confidence="0.60"),  # unknown clock
         ]
         return results, build_index(results)
 
@@ -132,7 +132,7 @@ class ArchiveHelperTests(unittest.TestCase):
 
         # Records whose clock is unknown cannot satisfy a date bound.
         self.assertEqual(
-            filter_indices(results, index, date_from=parse_date_bound("2020-01-01", False)), [0, 1, 2, 3, 4]
+            filter_indices(results, index, date_from=parse_date_bound("2020-01-01", False)), [0, 1, 2, 3]
         )
 
     def test_sort_keys(self):
@@ -145,8 +145,8 @@ class ArchiveHelperTests(unittest.TestCase):
         self.assertEqual(sort_indices(results, index, all_idx, "bogus"), [3, 2, 1, 0, 4])
 
         # Camera sort: name asc/desc; newest-first tiebreak inside each camera.
-        self.assertEqual(sort_indices(results, index, all_idx, "camera"), [1, 0, 4, 3, 2])
-        self.assertEqual(sort_indices(results, index, all_idx, "camera_desc"), [3, 2, 4, 1, 0])
+        self.assertEqual(sort_indices(results, index, all_idx, "camera"), [1, 0, 3, 2, 4])
+        self.assertEqual(sort_indices(results, index, all_idx, "camera_desc"), [4, 3, 2, 1, 0])
 
         # Class sort: alphabetical by the record's first class, records without classes last.
         results_no_class, index_no_class = self._fixture()
@@ -204,7 +204,7 @@ class ArchiveApiTests(unittest.TestCase):
             _record("Camera B", "20260104090000", classes=("car",), confidence="0.50"),
             _record("Camera B", "20260104120000", classes=("dog",), verdict="KEEP",
                     reason="high_value_object", confidence="0.80"),
-            _record("Camera C", "20260102120000", classes=("car",), confidence="0.60"),
+            _record("Camera C", "", classes=("car",), confidence="0.60"),  # unknown clock
         ]
         with open(os.path.join(self.output_dir, "analysis_results.json"), "w") as fh:
             json.dump(

@@ -274,7 +274,7 @@ Per-camera options:
 
 | Key | Meaning |
 | :--- | :--- |
-| `name` | Display name; also the camera column in reports and the archive. |
+| `name` | Display name; also the camera column in reports and the archive. Supports `${VAR:-default}` syntax. |
 | `url` | Main RTSP stream. Used for recording. |
 | `sub_url` | Optional lower-resolution substream. |
 | `gpu` | Preferred GPU index for this camera's inference. |
@@ -284,7 +284,7 @@ Per-camera options:
 | `tracker_config` | Optional path to a ByteTrack profile for this camera. |
 | `zones` | Named polygons with `type: entry` (alerts) or `type: ignore` (suppressed). |
 
-Environment variables (`CAM_*_URL`, `CAM_*_SUB_URL`, `NTFY_*`, `WEBHOOK_URL`, `DASHBOARD_URL`, `DASHBOARD_USER`, `DASHBOARD_PASSWORD`) are interpolated by docker compose from `.env`. Because the compose file lists each variable explicitly under `environment:`, a variable present in `.env` but missing from that list never reaches the container — add it in both places.
+Environment variables (`CAM_*_NAME`, `CAM_*_URL`, `CAM_*_SUB_URL`, `NTFY_*`, `WEBHOOK_URL`, `DASHBOARD_URL`, `DASHBOARD_USER`, `DASHBOARD_PASSWORD`) are interpolated from `.env`. Camera names can be customized via `CAM_A_NAME=...` in `.env` without modifying tracked configuration files. Additionally, if an untracked `config/live.local.yaml` exists alongside `config/live.yaml`, it is automatically preferred for full per-host customization.
 
 ### Main stream vs substream
 

@@ -37,6 +37,10 @@ services:
       - TZ=UTC
       - YOLO_CONFIG_DIR=/tmp/Ultralytics
       - NVIDIA_DRIVER_CAPABILITIES=compute,video,utility
+      - CAM_A_NAME=${CAM_A_NAME:-Camera A}
+      - CAM_B_NAME=${CAM_B_NAME:-Camera B}
+      - CAM_C_NAME=${CAM_C_NAME:-Camera C}
+      - CAM_D_NAME=${CAM_D_NAME:-Camera D}
       - CAM_A_URL=${CAM_A_URL:-}
       - CAM_B_URL=${CAM_B_URL:-}
       - CAM_C_URL=${CAM_C_URL:-}
@@ -65,6 +69,10 @@ services:
     environment:
       - DASHBOARD_USER=${DASHBOARD_USER:-}
       - DASHBOARD_PASSWORD=${DASHBOARD_PASSWORD:-}
+      - CAM_A_NAME=${CAM_A_NAME:-Camera A}
+      - CAM_B_NAME=${CAM_B_NAME:-Camera B}
+      - CAM_C_NAME=${CAM_C_NAME:-Camera C}
+      - CAM_D_NAME=${CAM_D_NAME:-Camera D}
     command: ["serve", "--output", "/data/output", "--clips", "/data/clips", "--config", "/app/config/live.yaml", "--host", "0.0.0.0", "--port", "8080"]
 
   rtsp-sim:

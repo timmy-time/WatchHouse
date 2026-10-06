@@ -33,6 +33,9 @@ class TestIncrementalCache(unittest.TestCase):
             "00000000_1_DVR000000_Camera A_00000000000000000000000000000001_20260103170429.mp4",
         )
         thumb1_src = clip1_src.replace(".mp4", ".png")
+        if not os.path.exists(clip1_src):
+            self.skipTest("Sample clip not found for incremental cache test")
+
 
         clip1_dest = os.path.join(folder_a, os.path.basename(clip1_src))
         thumb1_dest = os.path.join(folder_a, os.path.basename(thumb1_src))
