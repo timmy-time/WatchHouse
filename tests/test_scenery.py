@@ -105,6 +105,30 @@ class TestScenery(unittest.TestCase):
         matched_other = manager.match_slot("Camera C", det_box)
         self.assertIsNone(matched_other)
 
+    def test_animal_slot_occupancy(self):
+        slot_box = [0.10, 0.10, 0.40, 0.40]
+        self.store.create_vehicle_slot(
+            camera="Camera D",
+            name="Buster",
+            slot_box=json.dumps(slot_box),
+            color_name="golden",
+            appearance_sig="{}",
+            is_friendly=True,
+        )
+        manager = SceneryManager(self.store)
+        slot = manager.get_slots("Camera D")[0]
+
+        class DummyDetection:
+            def __init__(self, class_name, bbox):
+                self.class_name = class_name
+                self.bbox_xyxy = bbox
+
+        dog_det = DummyDetection("dog", (150, 150, 350, 350))
+        self.assertTrue(manager.is_slot_occupied(slot, [dog_det], 1000, 1000))
+
+        bird_det = DummyDetection("bird", (800, 800, 900, 900))
+        self.assertFalse(manager.is_slot_occupied(slot, [bird_det], 1000, 1000))
+
 
 if __name__ == "__main__":
     unittest.main()

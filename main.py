@@ -174,6 +174,24 @@ def cmd_infer_server(args: argparse.Namespace) -> int:
     uvicorn.run(app, host=args.host, port=args.port, log_level="info")
     return 0
 
+def cmd_reindex_faces(args: argparse.Namespace) -> int:
+    """Run face re-indexing on historical event clips."""
+    from engine.live.db import EventStore
+    from engine.reindexer import FaceReindexer
+    output_dir = os.path.abspath(args.output)
+    db_path = os.path.join(output_dir, "live/events.db")
+    if not os.path.exists(db_path):
+        db_path = os.path.join(output_dir, "events.db")
+    store = EventStore(db_path)
+    reindexer = FaceReindexer(store=store, output_dir=output_dir)
+    if args.clip:
+        res = reindexer.reindex_clip(os.path.abspath(args.clip), event_id=args.event_id, camera=args.camera)
+        print(f"Re-indexed clip: {res.get('faces_indexed', 0)} faces found.")
+        return 0
+    res = reindexer.reindex_events_directory(events_root=args.events_dir, camera=args.camera, limit=args.limit)
+    print(f"Re-indexed {res.get('processed_clips', 0)} clips: {res.get('total_faces_indexed', 0)} faces indexed.")
+    return 0
+
 
 def main():
     parser = argparse.ArgumentParser(
@@ -250,6 +268,18 @@ def main():
     infer_p.add_argument("--device", default="0", help="Torch device for inference ('0', 'cuda:0' or 'cpu')")
     infer_p.add_argument("--max-sessions", type=int, default=8, help="Max cached camera sessions (default: 8)")
     infer_p.set_defaults(func=cmd_infer_server)
+
+    # Face re-indexing command
+    reindex_p = subparsers.add_parser(
+        "reindex-faces", help="Scan event clips to detect, embed, and index faces into the gallery"
+    )
+    reindex_p.add_argument("--output", "-o", default="output", help="Output directory containing events and events.db")
+    reindex_p.add_argument("--events-dir", default=None, help="Directory containing event .mp4 clips")
+    reindex_p.add_argument("--clip", default=None, help="Specific .mp4 clip to reindex")
+    reindex_p.add_argument("--event-id", type=int, default=None, help="Specific event ID to associate")
+    reindex_p.add_argument("--limit", type=int, default=50, help="Max clips to process (default: 50)")
+    reindex_p.add_argument("--camera", default=None, help="Filter by camera name")
+    reindex_p.set_defaults(func=cmd_reindex_faces)
 
     args = parser.parse_args()
     return args.func(args)

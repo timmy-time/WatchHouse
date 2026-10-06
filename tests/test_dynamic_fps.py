@@ -92,6 +92,33 @@ class TestDynamicFps(unittest.TestCase):
         self.assertEqual(mode, "boost")
         self.assertEqual(target_fps, 5.0)
 
+    def test_pir_motion_gating_sleep_mode(self):
+        cfg = DynamicFpsConfig(
+            enabled=True,
+            idle_fps=1.0,
+            boost_fps=15.0,
+            motion_threshold=0.015,
+            boost_cooldown=3.0,
+            motion_gate=True,
+        )
+        controller = DynamicFpsController(cfg)
+        frame = np.zeros((480, 640, 3), dtype=np.uint8)
+
+        # Stationary scene with 1 tracked entity (no pixel motion)
+        controller.should_infer(0.0, frame, active_tracks=1)
+        # After cooldown (e.g. at t=4.0s > 3.0s), camera drops to idle / sleep!
+        _, mode, target_fps = controller.should_infer(4.0, frame, active_tracks=1)
+        self.assertEqual(mode, "idle")
+        self.assertEqual(target_fps, 1.0)
+
+        # Now actual motion occurs (white block moved into frame)
+        moving_frame = np.zeros((480, 640, 3), dtype=np.uint8)
+        moving_frame[100:300, 100:300] = 255
+        infer, mode_wake, target_fps_wake = controller.should_infer(4.2, moving_frame, active_tracks=1)
+        self.assertTrue(infer)
+        self.assertEqual(mode_wake, "boost")
+        self.assertEqual(target_fps_wake, 15.0)
+
 
 if __name__ == "__main__":
     unittest.main()

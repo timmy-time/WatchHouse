@@ -62,10 +62,11 @@ analysis:
   detailed_interval: 2.0
   dynamic_fps:
     enabled: true
-    idle_fps: 3.0
-    boost_fps: 15.0
-    motion_threshold: 0.015
-    boost_cooldown: 12.0
+    idle_fps: 1.0           # Baseline sleep heartbeat (1 fps) when scene has no motion
+    boost_fps: 15.0         # Full 15 fps analysis during active motion
+    motion_threshold: 0.015 # 1.5% pixel change wakes up the camera (like a PIR sensor)
+    boost_cooldown: 8.0     # Returns to sleep 8s after motion stops
+    motion_gate: true       # PIR-style: require pixel motion to sustain boost
 faces:
   enabled: true
   min_face_px: 40

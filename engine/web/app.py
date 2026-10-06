@@ -682,6 +682,24 @@ def create_app(output_dir: str, clips_dir: str, config_path: str) -> FastAPI:
                         pass
         return {"ok": True}
 
+    class ReindexRequest(BaseModel):
+        event_id: Optional[int] = None
+        camera: Optional[str] = None
+        limit: int = 50
+
+    @app.post("/api/faces/reindex")
+    async def faces_reindex(payload: Optional[ReindexRequest] = None):
+        from engine.reindexer import FaceReindexer
+        req = payload or ReindexRequest()
+        reindexer = FaceReindexer(store=store, output_dir=output_dir, face_engine=face_engine, gallery=gallery)
+        if req.event_id:
+            event_row = store.get_event(req.event_id)
+            if not event_row or not event_row.get("clip_path"):
+                raise HTTPException(status_code=404, detail="Event or clip not found")
+            full_clip = os.path.join(output_dir, event_row["clip_path"])
+            return reindexer.reindex_clip(full_clip, event_id=req.event_id, camera=event_row.get("camera", "Unknown"))
+        return reindexer.reindex_events_directory(camera=req.camera, limit=req.limit)
+
     @app.post("/api/identities/{identity_id}/photos", status_code=201)
     async def identity_upload_photo(identity_id: int, file: UploadFile = File(...)):
         # Verify identity exists

@@ -11,11 +11,11 @@ import numpy as np
 @dataclass
 class DynamicFpsConfig:
     enabled: bool = True
-    idle_fps: float = 3.0
-    boost_fps: float = 15.0
-    motion_threshold: float = 0.015  # Fraction of pixels changed (1.5%)
-    boost_cooldown: float = 12.0     # Stay in boost for 12s after last motion/event
-
+    idle_fps: float = 3.0            # Baseline heartbeat rate when scene is calm
+    boost_fps: float = 15.0          # High-speed analysis during active motion
+    motion_threshold: float = 0.015  # Fraction of pixels changed (1.5%) to wake up / boost
+    boost_cooldown: float = 8.0      # Stay in boost for 8s after motion stops
+    motion_gate: bool = False        # When True, requires actual pixel motion to sustain boost (PIR-style)
 
 class DynamicFpsController:
     """Controls analysis frame rate per camera based on scene activity and events."""
@@ -73,8 +73,11 @@ class DynamicFpsController:
         if frame is not None:
             has_motion, _ = self.check_motion(frame)
 
-        # Trigger boost on motion, active open event, or active tracked objects
-        if event_active or active_tracks > 0 or has_motion:
+        # Boost is triggered by actual pixel motion or active open alert events
+        if has_motion or event_active:
+            self.last_boost_time = now
+        elif not self.cfg.motion_gate and active_tracks > 0:
+            # Legacy mode: active tracks refresh boost continuously even without pixel motion
             self.last_boost_time = now
 
         in_boost = (now - self.last_boost_time) < self.cfg.boost_cooldown

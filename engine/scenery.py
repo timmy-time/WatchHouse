@@ -282,7 +282,8 @@ class SceneryManager:
     ) -> bool:
         """Check if any currently detected vehicle is still sitting in this slot."""
         for d in dets:
-            if getattr(d, "class_name", "") in ("car", "truck", "bus"):
+            cname = getattr(d, "class_name", "")
+            if cname in ("car", "truck", "bus", "motorcycle", "dog", "cat", "horse", "cow", "sheep", "person"):
                 d_norm = (
                     d.bbox_xyxy[0] / frame_w,
                     d.bbox_xyxy[1] / frame_h,

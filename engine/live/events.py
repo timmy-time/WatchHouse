@@ -264,7 +264,7 @@ class EventManager:
                 state = self.tracks[d.track_id]
 
             # Scenery slot anchor check for vehicles
-            if self.scenery is not None and d.class_name in VEHICLE_CLASSES:
+            if self.scenery is not None and (d.class_name in VEHICLE_CLASSES or d.class_name in ANIMAL_CLASSES):
                 # --- Slot-occupancy absorption (jitter-proof) ---
                 # A friendly slot with a parked vehicle inside repeatedly produces
                 # detections whose boxes jitter (foliage/partial occlusion). Tracking
@@ -483,16 +483,18 @@ class EventManager:
                     image_rel=thumb_rel,
                 )
             elif best_cat == "animal":
-                # Find animal class
+                # Find animal class and check for anchored pet name
+                anchored_name = next((s.anchored_slot_name for s in qualified_active if s.anchored_slot_name), None)
                 animal_cls = next((s.class_name for s in qualified_active if s.class_name in ANIMAL_CLASSES), "animal")
                 if animal_cls in self.cfg.notifications.notify_classes:
                     self.event_notified_kinds.add("animal")
+                    display_label = f"{anchored_name} ({animal_cls})" if anchored_name else f"{animal_cls.capitalize()}"
                     self.notifier.notify(
                         event_id=self.open_event_id,
                         camera=self.cam.name,
                         kind="animal",
-                        title=f"{animal_cls.capitalize()} at {self.cam.name}",
-                        body=f"Detected {animal_cls} at {self.cam.name}",
+                        title=f"{display_label} at {self.cam.name}",
+                        body=f"Detected {display_label} at {self.cam.name}",
                         image_rel=thumb_rel,
                     )
             # Vehicles not notified on open
@@ -589,15 +591,19 @@ class EventManager:
                 d for d in relevant_dets
                 if d.class_name == "person"
                 and d.track_id in self.tracks
-                and self.tracks[d.track_id].qualified
             ]
             person_dets.sort(
                 key=lambda d: (d.bbox_xyxy[2] - d.bbox_xyxy[0]) * (d.bbox_xyxy[3] - d.bbox_xyxy[1]),
                 reverse=True,
             )
-            for det in person_dets[:2]:
+            # Process each person in the frame (closest/largest first, up to 6 persons)
+            for det in person_dets[:6]:
                 tid = det.track_id
-                if now - self.face_track_last_embed.get(tid, 0.0) < 1.0:
+                tr = self.tracks.get(tid)
+                # Capture faces as soon as a track has 2+ frames, without waiting for displacement qualification
+                if tr is None or (not tr.qualified and tr.frame_count < 2):
+                    continue
+                if now - self.face_track_last_embed.get(tid, 0.0) < 0.8:
                     continue
 
                 cands = self.face_engine.detect_in_person(frame, det.bbox_xyxy)

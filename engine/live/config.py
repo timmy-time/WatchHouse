@@ -234,7 +234,8 @@ def load_live_config(path: str) -> LiveConfig:
                 idle_fps=float(ana_raw.get("dynamic_fps", {}).get("idle_fps", 3.0)),
                 boost_fps=float(ana_raw.get("dynamic_fps", {}).get("boost_fps", 15.0)),
                 motion_threshold=float(ana_raw.get("dynamic_fps", {}).get("motion_threshold", 0.015)),
-                boost_cooldown=float(ana_raw.get("dynamic_fps", {}).get("boost_cooldown", 12.0)),
+                boost_cooldown=float(ana_raw.get("dynamic_fps", {}).get("boost_cooldown", 8.0)),
+                motion_gate=bool(ana_raw.get("dynamic_fps", {}).get("motion_gate", True)),
             )
             if isinstance(ana_raw.get("dynamic_fps"), dict)
             else DynamicFpsConfig()

@@ -225,6 +225,26 @@ python3 main.py infer-server --host 0.0.0.0 --port 8099 --device 0
 | `--device` | `0` | Torch device: `0`, `cuda:0` or `cpu`. |
 | `--max-sessions` | `8` | Maximum cached camera sessions. |
 
+### `reindex-faces` — historical face re-indexing
+
+Scan saved event clips or archive directories to detect all persons in each frame, crop and embed faces with YuNet + SFace, match against the face gallery, and create/update unknown clusters for human review in the web dashboard.
+
+```bash
+python3 main.py reindex-faces \
+  --output /data/output \
+  --events-dir /data/output/events \
+  --limit 100
+```
+
+| Flag | Default | Description |
+| :--- | :--- | :--- |
+| `--output`, `-o` | `output` | Output directory containing `events.db` and faces. |
+| `--events-dir` | `<output>/events` | Root directory of event `.mp4` clips. |
+| `--clip` | `None` | Specific `.mp4` file to reindex. |
+| `--event-id` | `None` | Specific event ID to link faces to. |
+| `--camera` | `None` | Filter by camera name. |
+| `--limit` | `50` | Maximum clips to process. |
+
 ---
 
 ## Live Cameras and Dashboard
