@@ -176,6 +176,28 @@ class LiveConfig:
     cameras: List[CameraConfig] = field(default_factory=list)
 
 
+def _load_dotenv_if_present() -> None:
+    """Load key-value pairs from .env into os.environ if .env exists and key is unset."""
+    candidates = [
+        ".env",
+        os.path.join(os.getcwd(), ".env"),
+        os.path.join(os.path.dirname(__file__), "../../.env"),
+    ]
+    for env_path in candidates:
+        if os.path.exists(env_path):
+            try:
+                with open(env_path, "r", encoding="utf-8") as f:
+                    for line in f:
+                        line = line.strip()
+                        if line and not line.startswith("#") and "=" in line:
+                            k, v = line.split("=", 1)
+                            k = k.strip()
+                            v = v.strip().strip("'\"")
+                            os.environ.setdefault(k, v)
+                break
+            except Exception:
+                pass
+
 def load_live_config(path: str) -> LiveConfig:
     """Load and validate live configuration from YAML file.
 
@@ -183,6 +205,7 @@ def load_live_config(path: str) -> LiveConfig:
     it is preferred over the base template, allowing full per-host customization
     without modifying tracked files or leaking private configurations.
     """
+    _load_dotenv_if_present()
     base, ext = os.path.splitext(path)
     local_path = f"{base}.local{ext}"
     if os.path.exists(local_path):
