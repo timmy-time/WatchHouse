@@ -23,6 +23,33 @@ class FaceCandidate:
     quality: float
 
 
+YUNET_NAME = "face_detection_yunet_2023mar.onnx"
+SFACE_NAME = "face_recognition_sface_2021dec.onnx"
+YUNET_URL = "https://github.com/opencv/opencv_zoo/raw/main/models/face_detection_yunet/face_detection_yunet_2023mar.onnx"
+SFACE_URL = "https://github.com/opencv/opencv_zoo/raw/main/models/face_recognition_sface/face_recognition_sface_2021dec.onnx"
+
+
+def _ensure_face_models(model_dir: str = "/opt/models") -> Tuple[str, str]:
+    """Locate YuNet and SFace models or auto-download them into models/ on first run."""
+    candidates = [model_dir, "models", "/app/models", "/opt/models", os.path.expanduser("~/.cache/watchhouse/models")]
+    for c in candidates:
+        yp = os.path.join(c, YUNET_NAME)
+        sp = os.path.join(c, SFACE_NAME)
+        if os.path.exists(yp) and os.path.exists(sp):
+            return yp, sp
+
+    target_dir = "models" if (os.path.exists("models") or not os.path.exists("/opt/models")) else "/opt/models"
+    os.makedirs(target_dir, exist_ok=True)
+    yp = os.path.join(target_dir, YUNET_NAME)
+    sp = os.path.join(target_dir, SFACE_NAME)
+
+    import urllib.request
+    if not os.path.exists(yp):
+        urllib.request.urlretrieve(YUNET_URL, yp)
+    if not os.path.exists(sp):
+        urllib.request.urlretrieve(SFACE_URL, sp)
+    return yp, sp
+
 class FaceEngine:
     """Thread-local face detector (YuNet) and recognizer (SFace)."""
 
@@ -35,15 +62,7 @@ class FaceEngine:
         self.model_dir = model_dir
         self.min_face_px = min_face_px
         self.min_det_score = min_det_score
-
-        yunet_path = os.path.join(model_dir, "face_detection_yunet_2023mar.onnx")
-        sface_path = os.path.join(model_dir, "face_recognition_sface_2021dec.onnx")
-
-        if not os.path.exists(yunet_path) or not os.path.exists(sface_path):
-            raise FileNotFoundError(
-                f"Face models not found in {model_dir}: requires face_detection_yunet_2023mar.onnx and face_recognition_sface_2021dec.onnx"
-            )
-
+        yunet_path, sface_path = _ensure_face_models(model_dir)
         self.detector = cv2.FaceDetectorYN.create(yunet_path, "", (320, 320), 0.6, 0.3, 50)
         self.recognizer = cv2.FaceRecognizerSF.create(sface_path, "")
 

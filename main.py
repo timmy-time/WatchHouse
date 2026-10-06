@@ -154,14 +154,28 @@ def cmd_watch(args: argparse.Namespace) -> int:
 def cmd_live(args: argparse.Namespace) -> int:
     """Run live RTSP surveillance analysis engine."""
     from engine.live.worker import run_live
-    return run_live(config_path=args.config, output_dir=args.output)
+    output_dir = os.path.abspath(args.output)
+    if not os.path.exists(output_dir):
+        try:
+            os.makedirs(output_dir, exist_ok=True)
+        except OSError:
+            output_dir = os.path.abspath("output")
+            os.makedirs(output_dir, exist_ok=True)
+    return run_live(config_path=args.config, output_dir=output_dir)
 
 
 def cmd_serve(args: argparse.Namespace) -> int:
     """Run web dashboard and API server."""
     import uvicorn
     from engine.web.app import create_app
-    app = create_app(output_dir=args.output, clips_dir=args.clips, config_path=args.config)
+    output_dir = os.path.abspath(args.output)
+    if not os.path.exists(output_dir):
+        try:
+            os.makedirs(output_dir, exist_ok=True)
+        except OSError:
+            output_dir = os.path.abspath("output")
+            os.makedirs(output_dir, exist_ok=True)
+    app = create_app(output_dir=output_dir, clips_dir=args.clips, config_path=args.config)
     uvicorn.run(app, host=args.host, port=args.port, log_level="info")
     return 0
 

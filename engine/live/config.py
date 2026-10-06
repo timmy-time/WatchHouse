@@ -219,8 +219,15 @@ def load_live_config(path: str) -> LiveConfig:
         raw = yaml.safe_load(f) or {}
 
     rec_raw = raw.get("recording", {})
+    rec_root = _env_str(rec_raw.get("root", "/data/recordings"))
+    if not os.path.exists(rec_root):
+        try:
+            os.makedirs(rec_root, exist_ok=True)
+        except OSError:
+            rec_root = os.path.abspath("recordings")
+
     recording = RecordingConfig(
-        root=_env_str(rec_raw.get("root", "/data/recordings")),
+        root=rec_root,
         segment_seconds=int(rec_raw.get("segment_seconds", 10)),
         ring_minutes=int(rec_raw.get("ring_minutes", 15)),
     )

@@ -449,13 +449,22 @@ def run_live(config_path: str, output_dir: str) -> int:
             detailed_physical = "remote"
     else:
         detailed_physical = cfg.analysis.detailed_gpu
+
+    if detailed_physical not in ("cpu", "remote"):
+        num_gpus = len(gpu_scheduler.devices)
+        if num_gpus > 0 and int(detailed_physical) >= num_gpus:
+            logger.warning(
+                f"detailed_gpu={detailed_physical} exceeds discovered GPU count ({num_gpus}); "
+                f"falling back to GPU 0 (single-GPU mode)"
+            )
+            detailed_physical = 0
+
     realtime_physical = cfg.analysis.realtime_gpu
-    if detailed_setting == "gpu" and realtime_physical == cfg.analysis.detailed_gpu:
+    if detailed_setting == "gpu" and realtime_physical == detailed_physical:
         logger.warning(
             "realtime_gpu == detailed_gpu (%s): single-GPU mode, expect contention",
             realtime_physical,
         )
-
     verifier = DetailedVerifier(
         store=store,
         output_dir=output_dir,
