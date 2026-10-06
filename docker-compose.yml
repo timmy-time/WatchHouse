@@ -33,6 +33,8 @@ services:
       - ./output:/data/output:rw
       - ./recordings:/data/recordings:rw
       - ./config:/app/config:ro
+      - ./engine:/app/engine:ro
+      - ./main.py:/app/main.py:ro
     environment:
       - TZ=UTC
       - YOLO_CONFIG_DIR=/tmp/Ultralytics
@@ -68,7 +70,8 @@ services:
       - ./clips:/data/clips:ro
       - ./output:/data/output:rw
       - ./config:/app/config:ro
-      - ./engine/web/static:/app/engine/web/static:ro
+      - ./engine:/app/engine:ro
+      - ./main.py:/app/main.py:ro
     environment:
       - DASHBOARD_USER=${DASHBOARD_USER:-}
       - DASHBOARD_PASSWORD=${DASHBOARD_PASSWORD:-}
