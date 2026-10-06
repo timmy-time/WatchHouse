@@ -55,12 +55,26 @@ class AnalysisConfig:
     # on the GPU, chosen by the per-camera gpu below).
     realtime_device: str = "auto"
     detailed_device: str = "auto"
+    # Remote inference (device: "remote"): run YOLO on another host, e.g. a
+    # Windows/WSL2 box with a GPU. Frames go out as JPEG over HTTP.
+    remote_url: str = ""
+    remote_timeout: float = 10.0
+    remote_jpeg_quality: int = 80
     cpu_threads: int = 0           # torch intra-op threads for CPU inference (0 = torch default)
     detailed_model: str = "yolov8s.pt"
     detailed_imgsz: int = 1280
     detailed_conf: float = 0.25
     detailed_interval: float = 2.0  # seconds between detailed frame samples per camera
     tracker_config: str = "config/bytetrack_live.yaml"
+    # Analysis pipe shape. The pipe is what every camera worker reads, so its frame
+    # size drives per-frame CPU (rawvideo read, motion diff, preview encode) and the
+    # cost of feeding the detector. 0 = native source resolution.
+    pipe_width: int = 0
+    # Which stream feeds the analysis pipe: "main" or "sub". The main stream defines
+    # the coordinate space the dashboard zones and scenery slots were drawn in; a DVR
+    # substream is often 4:3 with a different vertical field of view (measured y-offset
+    # on this DVR), so switching a camera to "sub" invalidates existing zones/slots.
+    source: str = "main"
 
 
 @dataclass
@@ -116,7 +130,7 @@ class CameraConfig:
 
 
 def resolve_inference_device(spec: Optional[str], default: str = "auto") -> str:
-    """Map a config value to the actual inference device: "cpu" or "gpu".
+    """Map a config value to the actual inference device: "cpu", "gpu" or "remote".
 
     "auto" (or an unset value) defers to the role default; the default itself being
     "auto" keeps the pre-existing behaviour of running inference on the GPU the role
@@ -124,9 +138,16 @@ def resolve_inference_device(spec: Optional[str], default: str = "auto") -> str:
     """
     value = str(spec).strip().lower() if spec is not None else ""
     if value in ("", "auto"):
-        return "cpu" if str(default or "").strip().lower() == "cpu" else "gpu"
+        value = str(default or "").strip().lower()
+        if value == "cpu":
+            return "cpu"
+        if value == "remote":
+            return "remote"
+        return "gpu"
     if value == "cpu":
         return "cpu"
+    if value == "remote":
+        return "remote"
     if value in ("gpu", "cuda"):
         return "gpu"
     logger.warning("unknown inference device %r: falling back to the GPU", spec)
@@ -171,11 +192,16 @@ def load_live_config(path: str) -> LiveConfig:
         realtime_device=str(ana_raw.get("realtime_device", "auto")),
         detailed_device=str(ana_raw.get("detailed_device", "auto")),
         cpu_threads=int(ana_raw.get("cpu_threads", 0)),
+        remote_url=_env_str(ana_raw.get("remote_url", "")),
+        remote_timeout=float(ana_raw.get("remote_timeout", 10.0)),
+        remote_jpeg_quality=int(ana_raw.get("remote_jpeg_quality", 80)),
         detailed_model=str(ana_raw.get("detailed_model", "yolov8s.pt")),
         detailed_imgsz=int(ana_raw.get("detailed_imgsz", 1280)),
         detailed_conf=float(ana_raw.get("detailed_conf", 0.25)),
         detailed_interval=float(ana_raw.get("detailed_interval", 2.0)),
         tracker_config=str(ana_raw.get("tracker_config", "config/bytetrack_live.yaml")),
+        pipe_width=int(ana_raw.get("pipe_width", 0)),
+        source=str(ana_raw.get("source", "main")),
         dynamic_fps=(
             DynamicFpsConfig(enabled=bool(ana_raw.get("dynamic_fps")))
             if isinstance(ana_raw.get("dynamic_fps"), bool)

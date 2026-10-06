@@ -166,6 +166,15 @@ def cmd_serve(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_infer_server(args: argparse.Namespace) -> int:
+    """Run the standalone inference server (for offloading camera inference)."""
+    import uvicorn
+    from engine.live.infer_server import create_infer_app
+    app = create_infer_app(device=args.device, max_sessions=args.max_sessions)
+    uvicorn.run(app, host=args.host, port=args.port, log_level="info")
+    return 0
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Surveillance Video Event Analysis Engine - Filter parked cars & nuisance motion"
@@ -231,6 +240,17 @@ def main():
     serve_p.add_argument("--host", default="0.0.0.0", help="Host interface to bind (default: 0.0.0.0)")
     serve_p.add_argument("--port", type=int, default=8080, help="Port to bind (default: 8080)")
     serve_p.set_defaults(func=cmd_serve)
+
+    # Inference server command (offload camera inference to another machine)
+    infer_p = subparsers.add_parser(
+        "infer-server", help="Serve YOLO inference over HTTP so another host can offload camera inference"
+    )
+    infer_p.add_argument("--host", default="0.0.0.0", help="Host interface to bind (default: 0.0.0.0)")
+    infer_p.add_argument("--port", type=int, default=8099, help="Port to bind (default: 8099)")
+    infer_p.add_argument("--device", default="0", help="Torch device for inference ('0', 'cuda:0' or 'cpu')")
+    infer_p.add_argument("--max-sessions", type=int, default=8, help="Max cached camera sessions (default: 8)")
+    infer_p.set_defaults(func=cmd_infer_server)
+
     args = parser.parse_args()
     return args.func(args)
 

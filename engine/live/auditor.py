@@ -118,6 +118,9 @@ class VerifierCore:
         idle_unload_seconds: float = 600.0,
         cpu_inference: bool = False,
         cpu_threads: int = 0,
+        remote_url: str = "",
+        remote_timeout: float = 10.0,
+        remote_jpeg_quality: int = 80,
     ):
         self.model_name = model_name
         self.imgsz = imgsz
@@ -126,16 +129,35 @@ class VerifierCore:
         self.idle_unload_seconds = idle_unload_seconds
         self.cpu_inference = cpu_inference
         self.cpu_threads = cpu_threads
+        self.remote_url = remote_url
+        self.remote_timeout = remote_timeout
+        self.remote_jpeg_quality = remote_jpeg_quality
         self.detector = None
         self.last_work_time = time.time()
 
     # --- model lifecycle ---
 
     def ensure_detector(self) -> bool:
-        """Load the detector on the process's (already pinned) visible GPU, or on the CPU."""
+        """Load the detector on the process's (already pinned) visible GPU, on the CPU, or remotely."""
         if self.detector is not None:
             return True
         try:
+            if self.remote_url:
+                from engine.live.remote_infer import RemoteDetector
+                self.detector = RemoteDetector(
+                    url=self.remote_url,
+                    session="verifier",
+                    model_path=self.model_name,
+                    imgsz=self.imgsz,
+                    jpeg_quality=self.remote_jpeg_quality,
+                    timeout=self.remote_timeout,
+                )
+                logger.info(
+                    f"DetailedVerifier core ready: {self.model_name} @ {self.imgsz}px "
+                    f"(remote {self.remote_url})"
+                )
+                return True
+
             from engine.detector import ClipDetector, configure_cpu_inference
             if self.cpu_inference:
                 configure_cpu_inference(self.cpu_threads)
@@ -249,8 +271,8 @@ class VerifierCore:
 
 
 def _child_main(cfg: dict, in_q, out_q) -> None:
-    """Spawned-process entry: pin the GPU *before* any CUDA call (unless running on CPU)."""
-    if cfg.get("cpu_inference"):
+    """Spawned-process entry: pin the GPU before any CUDA call (CPU/remote need no pin)."""
+    if cfg.get("cpu_inference") or cfg.get("remote_url"):
         os.environ.pop("CUDA_VISIBLE_DEVICES", None)
     else:
         os.environ["CUDA_VISIBLE_DEVICES"] = str(cfg["physical_device"])
@@ -263,6 +285,9 @@ def _child_main(cfg: dict, in_q, out_q) -> None:
         idle_unload_seconds=cfg["idle_unload_seconds"],
         cpu_inference=bool(cfg.get("cpu_inference")),
         cpu_threads=int(cfg.get("cpu_threads", 0)),
+        remote_url=str(cfg.get("remote_url", "")),
+        remote_timeout=float(cfg.get("remote_timeout", 10.0)),
+        remote_jpeg_quality=int(cfg.get("remote_jpeg_quality", 80)),
     )
     core.run(in_q, out_q)
 
@@ -283,6 +308,9 @@ class DetailedVerifier:
         idle_unload_seconds: float = 600.0,
         queue_size: int = 8,
         cpu_threads: int = 0,
+        remote_url: str = "",
+        remote_timeout: float = 10.0,
+        remote_jpeg_quality: int = 80,
         # test hook: run inference in-process instead of spawning
         inject_core: Optional[VerifierCore] = None,
     ):
@@ -291,6 +319,9 @@ class DetailedVerifier:
         self.model_name = model_name
         self.device = device
         self.cpu_threads = cpu_threads
+        self.remote_url = remote_url
+        self.remote_timeout = remote_timeout
+        self.remote_jpeg_quality = remote_jpeg_quality
         self.imgsz = imgsz
         self.conf_threshold = conf_threshold
         self.notify_classes = notify_classes or {"person", "dog", "cat", "bear", "horse", "cow", "sheep"}
@@ -315,6 +346,13 @@ class DetailedVerifier:
 
     # --- lifecycle ---
 
+    def _target_label(self) -> str:
+        if self.remote_url:
+            return f"remote {self.remote_url}"
+        if self.device == "cpu":
+            return "CPU"
+        return f"GPU {self.device}"
+
     def start(self) -> None:
         """Spawn the inference child and the result consumer."""
         self.started_at = time.time()
@@ -323,6 +361,9 @@ class DetailedVerifier:
                 "physical_device": self.device,
                 "cpu_inference": self.device == "cpu",
                 "cpu_threads": self.cpu_threads,
+                "remote_url": self.remote_url,
+                "remote_timeout": self.remote_timeout,
+                "remote_jpeg_quality": self.remote_jpeg_quality,
                 "model_name": self.model_name,
                 "imgsz": self.imgsz,
                 "conf_threshold": self.conf_threshold,
@@ -337,7 +378,7 @@ class DetailedVerifier:
                 self._proc.start()
                 logger.info(
                     f"DetailedVerifier child started (pid {self._proc.pid}) "
-                    f"-> {'CPU' if self.device == 'cpu' else f'GPU {self.device}'} "
+                    f"-> {self._target_label()} "
                     f"({self.model_name} @ {self.imgsz}px)"
                 )
             except Exception as exc:

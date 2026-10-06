@@ -96,6 +96,53 @@ python3 main.py watch \
 
 ---
 
+## Offloading Live Camera Inference (Windows / WSL2)
+
+The live engine can send its per-frame YOLO work to another machine, so the camera
+server only decodes, tracks events, records and serves the dashboard. Frames go out
+as JPEG and tracked boxes come back, one tracker session per camera.
+
+**1. On the Windows / WSL2 box** (GTX 1650 = sm_75, works with current CUDA wheels):
+
+```bash
+git clone <this repo> && cd watchhouse
+python3 -m venv .venv && . .venv/bin/activate
+pip install -r requirements.txt          # pulls torch + ultralytics
+python main.py infer-server --host 0.0.0.0 --port 8099 --device 0
+curl http://localhost:8099/health        # {"ok":true,"device":"0","sessions":0,...}
+```
+
+Model weights download on first use (`yolov8n.pt`), or copy the `.pt` files over.
+On Windows itself, add an inbound firewall rule for TCP 8099. From WSL2 the LAN also
+needs a port proxy to reach the NAT'd WSL VM:
+
+```powershell
+netsh interface portproxy add v4tov4 listenport=8099 listenaddress=0.0.0.0 `
+  connectport=8099 connectaddress=$(wsl hostname -I).Trim()
+netsh advfirewall firewall add rule name="CCTV infer" dir=in action=allow protocol=TCP localport=8099
+```
+
+**2. On the camera server**, point the analysis at it (`config/live.yaml`):
+
+```yaml
+analysis:
+  realtime_device: remote                    # or per camera: device: remote
+  remote_url: "http://<windows-lan-ip>:8099"
+  remote_timeout: 10.0
+  remote_jpeg_quality: 80
+  detailed_device: remote                    # optional: move the detailed verifier too
+```
+
+**3. Verify**: startup logs say `inference=remote`, and `output/live/status.json`
+carries `inference_stats` per camera (calls, errors, avg round-trip ms).
+
+Notes: ~35-55 KB per frame at 704×396 q80 (~0.5 MB/s per camera at 15 fps). If the
+remote host is unreachable or slower than the frame rate, frames keep decoding and
+the camera simply analyses fewer frames; the client returns no detections, logs one
+warning per 20 s and counts the failures in the status file.
+
+---
+
 ## Unit & Ground-Truth Tests
 
 Run the test suite inside the container:

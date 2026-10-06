@@ -39,13 +39,20 @@ class CameraStream:
         cam: CameraConfig,
         rec_cfg: RecordingConfig,
         fps: int = 5,
+        pipe_width: int = 0,
+        source: str = "main",
     ):
         self.cam = cam
         self.rec_cfg = rec_cfg
         self.fps = fps
+        self.pipe_width = max(0, int(pipe_width))
+        self.source = (source or "main").strip().lower()
 
         self.width = 1920
         self.height = 1080
+        # Analysis pipe frame size (== source size unless the pipe is downscaled)
+        self.pipe_w = self.width
+        self.pipe_h = self.height
         self.use_hwaccel = True
         self.nvdec_fail_count = 0
         self.sub_failed = False
@@ -64,10 +71,31 @@ class CameraStream:
         self.supervisor_thread = threading.Thread(target=self._supervisor_loop, daemon=True)
 
     def _analysis_url(self) -> str:
-        """URL used for the realtime analysis pipe: substream when available and healthy."""
-        if self.cam.sub_url and not self.sub_failed:
+        """URL feeding the realtime analysis pipe.
+
+        "sub" prefers the DVR substream while it is healthy; "main" always uses the
+        main stream, whose framing defines the dashboard's normalized coordinates.
+        """
+        if self.source == "sub" and self.cam.sub_url and not self.sub_failed:
             return self.cam.sub_url
         return self.cam.url
+
+    def _analysis_filter(self) -> str:
+        """Filters applied to the pipe: optional downscale, then the analysis frame rate."""
+        parts = []
+        if self.pipe_width and self.width > self.pipe_width:
+            parts.append(f"scale={self.pipe_width}:-2")
+        parts.append(f"fps={self.fps}")
+        return ",".join(parts)
+
+    def _resolve_pipe_size(self) -> None:
+        """Track the size ffmpeg will actually emit, so the reader stays in sync."""
+        if self.pipe_width and self.width > self.pipe_width:
+            out_w = self.pipe_width
+            out_h = int(round(self.height * out_w / self.width / 2.0)) * 2
+            self.pipe_w, self.pipe_h = out_w, out_h
+        else:
+            self.pipe_w, self.pipe_h = self.width, self.height
 
     def _hwaccel_flags(self) -> List[str]:
         """ffmpeg hardware-decode flags for this camera.
@@ -116,6 +144,7 @@ class CameraStream:
                 w, h = int(parts[0]), int(parts[1])
                 self.width = w
                 self.height = h
+                self._resolve_pipe_size()
                 return w, h
         except Exception as exc:
             logger.warning(f"{self.cam.name}: ffprobe failed ({exc}), falling back to 1920x1080")
@@ -134,7 +163,7 @@ class CameraStream:
 
         pipe_args = [
             "-map", "0:v:0",
-            "-vf", f"fps={self.fps}",
+            "-vf", self._analysis_filter(),
             "-pix_fmt", "bgr24",
             "-f", "rawvideo",
             "pipe:1",
@@ -162,13 +191,14 @@ class CameraStream:
             segment_pattern,
         ]
 
-        if self.cam.sub_url and not self.sub_failed:
-            # --- Dual input: analysis on substream, recording on main ---
+        analysis_url = self._analysis_url()
+        if analysis_url != self.cam.url:
+            # --- Twin inputs: analysis decodes the secondary stream, recording copies the main ---
             if hwaccel:
                 cmd += self._hwaccel_flags()
             cmd += [
                 "-rtsp_transport", "tcp", "-stimeout", "10000000",
-                "-i", self.cam.sub_url,
+                "-i", analysis_url,
                 "-rtsp_transport", "tcp", "-stimeout", "10000000",
                 "-i", self.cam.url,
                 # Output 1: MP4 segments, copied from main (no decode cost)
@@ -201,7 +231,8 @@ class CameraStream:
             cmd = self.build_cmd(hwaccel=self.use_hwaccel)
             start_time = time.time()
             logger.info(
-                f"{self.cam.name}: Starting ffmpeg (hwaccel={self.use_hwaccel}, {self.width}x{self.height} @ {self.fps}fps)"
+                f"{self.cam.name}: Starting ffmpeg (hwaccel={self.use_hwaccel}, source={self.source}, "
+                f"{self.width}x{self.height} -> {self.pipe_w}x{self.pipe_h} @ {self.fps}fps)"
             )
 
             try:
@@ -219,7 +250,7 @@ class CameraStream:
                 continue
             self.last_frame_time = start_time
 
-            frame_size = self.width * self.height * 3
+            frame_size = self.pipe_w * self.pipe_h * 3
             fps_count = 0
             fps_start = time.time()
 
@@ -249,7 +280,7 @@ class CameraStream:
                     fps_count = 0
                     fps_start = now
 
-                arr = np.frombuffer(raw, dtype=np.uint8).reshape((self.height, self.width, 3))
+                arr = np.frombuffer(raw, dtype=np.uint8).reshape((self.pipe_h, self.pipe_w, 3))
                 with self.condition:
                     self.latest_frame = (now, arr)
                     self.condition.notify_all()
@@ -326,7 +357,8 @@ class CameraStream:
         return {
             "connected": connected,
             "decode": "nvdec" if self.use_hwaccel else "cpu",
-            "source": "sub" if (self.cam.sub_url and not self.sub_failed) else "main",
+            "source": "sub" if (self.source == "sub" and self.cam.sub_url and not self.sub_failed) else "main",
+            "pipe": f"{self.pipe_w}x{self.pipe_h}",
             "fps_in": self.fps_in,
             "restarts": self.restarts,
             "error": self.last_error,

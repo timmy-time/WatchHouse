@@ -17,6 +17,7 @@ from engine.live.config import CameraConfig, LiveConfig, load_live_config, resol
 from engine.live.db import EventStore
 from engine.live.events import EventManager
 from engine.live.notify import Notifier
+from engine.live.remote_infer import RemoteDetector
 from engine.live.stream import CameraStream
 from engine.scenery import SceneryManager
 import cv2
@@ -110,22 +111,29 @@ class CameraWorker(threading.Thread):
         self.fps_controller = DynamicFpsController(cfg.analysis.dynamic_fps)
         self.current_detections: List[Dict[str, Any]] = []
 
-        self.stream = CameraStream(cam, cfg.recording, fps=cfg.analysis.fps)
+        self.stream = CameraStream(
+            cam,
+            cfg.recording,
+            fps=cfg.analysis.fps,
+            pipe_width=cfg.analysis.pipe_width,
+            source=cfg.analysis.source,
+        )
         # Per-camera detection overrides (falling back to the global analysis config)
         self.model_path = cam.model or cfg.analysis.model
         self.imgsz = cam.imgsz or cfg.analysis.imgsz
         self.conf_threshold = cam.confidence if cam.confidence is not None else cfg.analysis.confidence
         self.tracker_config = _resolve_tracker_config(cfg, cam)
-        # "cpu" runs YOLO on the CPU; ffmpeg decode stays on the GPU (cam.gpu).
+        # "cpu"/"remote" move the forward pass off this box; ffmpeg decode stays on the GPU (cam.gpu).
         self.inference_device = resolve_inference_device(cam.device, cfg.analysis.realtime_device)
         if self.inference_device == "cpu":
             configure_cpu_inference(cfg.analysis.cpu_threads)
-        self.detector = ClipDetector(
-            model_path=self.model_path,
-            device="cpu" if self.inference_device == "cpu" else "",  # GPU pinning is done via CUDA_VISIBLE_DEVICES at process start
-            imgsz=self.imgsz,
-            tracker_config=self.tracker_config,
-        )
+        elif self.inference_device == "remote" and not cfg.analysis.remote_url:
+            logger.error(
+                f"{self.cam.name}: device=remote but analysis.remote_url is unset; "
+                f"falling back to GPU inference"
+            )
+            self.inference_device = "gpu"
+        self.detector = self._build_detector()
         # Live-only cameras (record=False) get no clip assembly thread at all.
         self.finalizer = Finalizer(
             cam, cfg, store, output_dir,
@@ -169,6 +177,26 @@ class CameraWorker(threading.Thread):
             os.replace(tmp, path)
         except Exception as exc:
             logger.debug(f"{self.cam.name}: detections write failed: {exc}")
+
+    def _build_detector(self):
+        """Build the inference backend for this camera (local YOLO or a remote host)."""
+        if self.inference_device == "remote":
+            return RemoteDetector(
+                url=self.cfg.analysis.remote_url,
+                session=self.cam.slug or self.cam.name,
+                model_path=self.model_path,
+                imgsz=self.imgsz,
+                tracker_config=self.tracker_config,
+                jpeg_quality=self.cfg.analysis.remote_jpeg_quality,
+                timeout=self.cfg.analysis.remote_timeout,
+            )
+        return ClipDetector(
+            model_path=self.model_path,
+            # GPU pinning is done via CUDA_VISIBLE_DEVICES at process start
+            device="cpu" if self.inference_device == "cpu" else "",
+            imgsz=self.imgsz,
+            tracker_config=self.tracker_config,
+        )
 
     def run(self) -> None:
         logger.info(
@@ -280,14 +308,18 @@ class CameraWorker(threading.Thread):
                 logger.info(f"{self.cam.name}: Rebuilding stream and detector...")
                 try:
                     self.stream.stop()
-                    self.stream = CameraStream(self.cam, self.cfg.recording, fps=self.cfg.analysis.fps)
-                    self.stream.start()
-                    self.detector = ClipDetector(
-                        model_path=self.model_path,
-                        device="cpu" if self.inference_device == "cpu" else "",
-                        imgsz=self.imgsz,
-                        tracker_config=self.tracker_config,
+                    self.stream = CameraStream(
+                        self.cam,
+                        self.cfg.recording,
+                        fps=self.cfg.analysis.fps,
+                        pipe_width=self.cfg.analysis.pipe_width,
+                        source=self.cfg.analysis.source,
                     )
+                    self.stream.start()
+                    reset = getattr(self.detector, "reset", None)
+                    if callable(reset):
+                        reset()   # drop stale tracker state on the remote backend too
+                    self.detector = self._build_detector()
                 except Exception as rebuild_exc:
                     logger.error(f"{self.cam.name}: Rebuild failed: {rebuild_exc}")
 
@@ -357,7 +389,16 @@ def run_live(config_path: str, output_dir: str) -> int:
     # child pins itself to the detailed GPU. Same index => single-GPU mode.
     realtime_device = 0  # visible index inside this process (pinned to the realtime GPU)
     detailed_setting = resolve_inference_device(cfg.analysis.detailed_device)
-    detailed_physical = "cpu" if detailed_setting == "cpu" else cfg.analysis.detailed_gpu
+    if detailed_setting == "cpu":
+        detailed_physical: Any = "cpu"
+    elif detailed_setting == "remote":
+        if not cfg.analysis.remote_url:
+            logger.error("detailed_device=remote but analysis.remote_url is unset; using the detailed GPU")
+            detailed_setting, detailed_physical = "gpu", cfg.analysis.detailed_gpu
+        else:
+            detailed_physical = "remote"
+    else:
+        detailed_physical = cfg.analysis.detailed_gpu
     realtime_physical = cfg.analysis.realtime_gpu
     if detailed_setting == "gpu" and realtime_physical == cfg.analysis.detailed_gpu:
         logger.warning(
@@ -375,6 +416,9 @@ def run_live(config_path: str, output_dir: str) -> int:
         notify_classes=set(cfg.notifications.notify_classes),
         notifier=notifier,
         cpu_threads=cfg.analysis.cpu_threads,
+        remote_url=cfg.analysis.remote_url if detailed_setting == "remote" else "",
+        remote_timeout=cfg.analysis.remote_timeout,
+        remote_jpeg_quality=cfg.analysis.remote_jpeg_quality,
     )
     verifier.start()
     logger.info(
@@ -444,6 +488,9 @@ def run_live(config_path: str, output_dir: str) -> int:
                         **w.stream.status(),
                         "gpu": w.cam.gpu,
                         "inference_device": w.inference_device,
+                        "inference_stats": (
+                            w.detector.stats() if hasattr(w.detector, "stats") else None
+                        ),
                         "record": w.cam.record,
                         "mode": w.fps_controller.current_mode,
                         "target_fps": (

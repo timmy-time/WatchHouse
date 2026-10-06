@@ -25,9 +25,9 @@ class TestStreamCommand(unittest.TestCase):
     def tearDown(self):
         shutil.rmtree(self.tmp, ignore_errors=True)
 
-    def _stream(self, cam):
+    def _stream(self, cam, **kw):
         rec = RecordingConfig(root=self.tmp, segment_seconds=10, ring_minutes=15)
-        return CameraStream(cam, rec, fps=15)
+        return CameraStream(cam, rec, fps=15, **kw)
 
     def test_single_input_without_substream(self):
         cmd = self._stream(_cam()).build_cmd(hwaccel=True)
@@ -39,7 +39,7 @@ class TestStreamCommand(unittest.TestCase):
         self.assertIn("fps=15", cmd)
 
     def test_dual_input_maps_sub_for_analysis_and_main_for_recording(self):
-        cmd = self._stream(_cam(sub_url=SUB)).build_cmd(hwaccel=True)
+        cmd = self._stream(_cam(sub_url=SUB), source="sub").build_cmd(hwaccel=True)
         self.assertEqual(cmd.count("-i"), 2)
         self.assertIn(SUB, cmd)
         self.assertIn(MAIN, cmd)
@@ -51,8 +51,28 @@ class TestStreamCommand(unittest.TestCase):
         self.assertIn("copy", cmd)
         self.assertIn("fps=15", cmd)
 
-    def test_substream_failure_switches_back_to_main(self):
+    def test_main_source_ignores_configured_substream(self):
+        """The main stream defines the coordinate space zones/slots were drawn in."""
         stream = self._stream(_cam(sub_url=SUB))
+        cmd = stream.build_cmd(hwaccel=False)
+        self.assertEqual(cmd.count("-i"), 1)
+        self.assertIn(MAIN, cmd)
+        self.assertNotIn(SUB, cmd)
+        self.assertEqual(stream.status()["source"], "main")
+
+    def test_recording_camera_on_main_source_keeps_pipe_size_consistent(self):
+        """Regression: the twin-input branch ignored `source`, so the pipe carried the
+        substream (704x576) while the reader expected main-derived 704x396 frames —
+        sheared previews and a 1.45x frame-rate overcount."""
+        stream = self._stream(_cam(sub_url=SUB), pipe_width=704)
+        cmd = stream.build_cmd(hwaccel=True)
+        self.assertEqual(cmd.count("-i"), 1)
+        stream._resolve_pipe_size()
+        self.assertEqual((stream.pipe_w, stream.pipe_h), (704, 396))
+        self.assertIn("scale=704:-2,fps=15", cmd)
+
+    def test_substream_failure_switches_back_to_main(self):
+        stream = self._stream(_cam(sub_url=SUB), source="sub")
         self.assertIn(SUB, stream.build_cmd(hwaccel=False))
         stream.sub_failed = True
         cmd = stream.build_cmd(hwaccel=False)
@@ -60,10 +80,26 @@ class TestStreamCommand(unittest.TestCase):
         self.assertNotIn(SUB, cmd)
 
     def test_status_reports_source(self):
-        stream = self._stream(_cam(sub_url=SUB))
+        stream = self._stream(_cam(sub_url=SUB), source="sub")
         self.assertEqual(stream.status()["source"], "sub")
         stream.sub_failed = True
         self.assertEqual(stream.status()["source"], "main")
+
+    def test_pipe_downscale_keeps_aspect_and_size_bookkeeping(self):
+        stream = self._stream(_cam(), pipe_width=704)
+        self.assertEqual(stream._analysis_filter(), "scale=704:-2,fps=15")
+        stream._resolve_pipe_size()  # as probe() does once the source size is known
+        self.assertEqual((stream.pipe_w, stream.pipe_h), (704, 396))
+        self.assertEqual(stream.status()["pipe"], "704x396")
+        cmd = stream.build_cmd(hwaccel=False)
+        self.assertIn("scale=704:-2,fps=15", cmd)
+
+    def test_pipe_downscale_skipped_when_source_is_already_small(self):
+        stream = self._stream(_cam(), pipe_width=704)
+        stream.width, stream.height = 704, 576
+        stream._resolve_pipe_size()
+        self.assertEqual(stream._analysis_filter(), "fps=15")
+        self.assertEqual((stream.pipe_w, stream.pipe_h), (704, 576))
 
     def test_cpu_decode_omits_hwaccel(self):
         cmd = self._stream(_cam()).build_cmd(hwaccel=False)
@@ -83,7 +119,7 @@ class TestStreamCommand(unittest.TestCase):
         self.assertFalse(os.path.exists(os.path.join(self.tmp, "Camera A")))
 
     def test_live_only_camera_prefers_substream(self):
-        cmd = self._stream(_cam(record=False, sub_url=SUB)).build_cmd(hwaccel=False)
+        cmd = self._stream(_cam(record=False, sub_url=SUB), source="sub").build_cmd(hwaccel=False)
         self.assertIn(SUB, cmd)
         self.assertNotIn(MAIN, cmd)
 

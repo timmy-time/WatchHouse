@@ -11,16 +11,35 @@ analysis:
   post_roll_seconds: 10
   max_event_seconds: 300
   tracker_config: config/bytetrack_live.yaml
+  # Analysis pipe width. The pipe is what each camera worker reads, so its frame size
+  # drives per-frame CPU (rawvideo read, motion diff, preview encode) and detector
+  # input. Analysing 1080p burned ~7 of 8 CPU cores; 704px wide cut that to ~1 core
+  # with no framing change. 0 = keep native source resolution.
+  pipe_width: 0 
+  #704
+  # Which stream feeds the pipe: "main" keeps the framing that dashboard zones and
+  # scenery slots were drawn in. The DVR substream is 4:3 (704x576) with a different
+  # vertical field of view, so "sub" requires zones/slots to be redrawn and is only
+  # worth it to take decode off the GPU.
+  source: main
   # Dual-GPU split: GPU 0 realtime (all cameras), GPU 1 detailed verification
   realtime_gpu: 0
   detailed_gpu: 1
-  # Where YOLO runs. "auto"/"gpu" = on the GPU above; "cpu" = on the CPU.
-  # ffmpeg still decodes on the GPU either way: every ffmpeg child is spawned with
-  # its own CUDA_VISIBLE_DEVICES pointing at realtime_gpu, so hardware decode keeps
-  # working even though CPU inference makes Ultralytics hide the GPUs in-process.
-  # A camera can override with `device: cpu|gpu|auto` in its own block.
+  # Where YOLO runs: "auto"/"gpu" = on the GPU above, "cpu" = on this server's CPU,
+  # "remote" = on another machine via remote_url (see below). A camera can override
+  # with `device: cpu|gpu|remote|auto` in its own block.
+  # ffmpeg always decodes on the GPU: every ffmpeg child is spawned with its own
+  # CUDA_VISIBLE_DEVICES pointing at realtime_gpu, so hardware decode keeps working
+  # even when inference is CPU-side or fully off-box.
   realtime_device: auto
   detailed_device: auto
+  # Remote inference host (device: "remote"). Run the other side with:
+  #   python main.py infer-server --host 0.0.0.0 --port 8099 --device 0
+  # Frames are sent as JPEG and tracked boxes come back; each camera keeps its own
+  # tracker session remotely. Set this to e.g. http://<windows-or-wsl-lan-ip>:8099
+  remote_url: ""
+  remote_timeout: 10.0
+  remote_jpeg_quality: 80
   # torch intra-op threads for CPU inference (0 = torch's default). One thread is
   # enough to keep up with a few cameras at the idle frame rate; raise it only if
   # measured fps_analyzed falls behind the target.
