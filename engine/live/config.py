@@ -10,6 +10,7 @@ import yaml
 
 from engine.behavior import Zone
 from engine.live.dynamic_fps import DynamicFpsConfig
+from engine.live.lighting import NightModeConfig
 
 logger = logging.getLogger(__name__)
 
@@ -55,6 +56,7 @@ class AnalysisConfig:
     post_roll_seconds: int = 10
     max_event_seconds: int = 300
     dynamic_fps: DynamicFpsConfig = field(default_factory=DynamicFpsConfig)
+    night_mode: NightModeConfig = field(default_factory=NightModeConfig)
     # Dual-GPU roles
     realtime_gpu: int = 0          # fast path: all camera workers
     detailed_gpu: int = 1          # slow path: detailed verifier
@@ -135,6 +137,9 @@ class CameraConfig:
     imgsz: Optional[int] = None
     tracker_config: Optional[str] = None
     device: Optional[str] = None   # "auto" | "gpu" | "cpu" — overrides analysis.realtime_device
+    night_confidence: Optional[float] = None
+    night_tracker_config: Optional[str] = None
+    night_imgsz: Optional[int] = None
 
 
 def resolve_inference_device(spec: Optional[str], default: str = "auto") -> str:
@@ -234,6 +239,22 @@ def load_live_config(path: str) -> LiveConfig:
             if isinstance(ana_raw.get("dynamic_fps"), dict)
             else DynamicFpsConfig()
         ),
+        night_mode=(
+            NightModeConfig(enabled=bool(ana_raw.get("night_mode")))
+            if isinstance(ana_raw.get("night_mode"), bool)
+            else NightModeConfig(
+                enabled=bool(ana_raw.get("night_mode", {}).get("enabled", True)),
+                confidence=float(ana_raw.get("night_mode", {}).get("confidence", 0.20)),
+                tracker_config=str(ana_raw.get("night_mode", {}).get("tracker_config", "config/bytetrack_mild.yaml")),
+                imgsz=(int(ana_raw.get("night_mode", {}).get("imgsz")) if ana_raw.get("night_mode", {}).get("imgsz") is not None else None),
+                night_threshold=float(ana_raw.get("night_mode", {}).get("night_threshold", 6.0)),
+                day_threshold=float(ana_raw.get("night_mode", {}).get("day_threshold", 15.0)),
+                confirm_seconds=float(ana_raw.get("night_mode", {}).get("confirm_seconds", 6.0)),
+                cooldown_seconds=float(ana_raw.get("night_mode", {}).get("cooldown_seconds", 30.0)),
+            )
+            if isinstance(ana_raw.get("night_mode"), dict)
+            else NightModeConfig()
+        ),
     )
 
     faces_raw = raw.get("faces", {})
@@ -301,6 +322,9 @@ def load_live_config(path: str) -> LiveConfig:
             imgsz=int(c["imgsz"]) if c.get("imgsz") is not None else None,
             tracker_config=str(c["tracker_config"]) if c.get("tracker_config") else None,
             device=str(c["device"]) if c.get("device") else None,
+            night_confidence=float(c["night_confidence"]) if c.get("night_confidence") is not None else None,
+            night_tracker_config=str(c["night_tracker_config"]) if c.get("night_tracker_config") else None,
+            night_imgsz=int(c["night_imgsz"]) if c.get("night_imgsz") is not None else None,
         ))
 
     return LiveConfig(

@@ -24,6 +24,7 @@ import cv2
 from engine.live.auditor import DetailedVerifier
 from engine.live.dynamic_fps import DynamicFpsController
 from engine.live.scheduler import GpuScheduler
+from engine.live.lighting import LightingModeTracker
 
 logger = logging.getLogger(__name__)
 
@@ -123,6 +124,27 @@ class CameraWorker(threading.Thread):
         self.imgsz = cam.imgsz or cfg.analysis.imgsz
         self.conf_threshold = cam.confidence if cam.confidence is not None else cfg.analysis.confidence
         self.tracker_config = _resolve_tracker_config(cfg, cam)
+        # Day / Night lighting mode profiles
+        self.day_conf = self.conf_threshold
+        self.day_tracker = self.tracker_config
+        self.day_imgsz = self.imgsz
+
+        night_cfg = cfg.analysis.night_mode
+        self.night_conf = (
+            cam.night_confidence
+            if cam.night_confidence is not None
+            else (night_cfg.confidence if night_cfg.enabled else self.day_conf)
+        )
+        self.night_tracker = (
+            cam.night_tracker_config
+            or (night_cfg.tracker_config if night_cfg.enabled else self.day_tracker)
+        )
+        self.night_imgsz = (
+            cam.night_imgsz
+            or (night_cfg.imgsz if (night_cfg.enabled and night_cfg.imgsz) else self.day_imgsz)
+        )
+        self.lighting_tracker = LightingModeTracker(night_cfg)
+        self.lighting_mode = "day"
         # "cpu"/"remote" move the forward pass off this box; ffmpeg decode stays on the GPU (cam.gpu).
         self.inference_device = resolve_inference_device(cam.device, cfg.analysis.realtime_device)
         if self.inference_device == "cpu":
@@ -197,6 +219,28 @@ class CameraWorker(threading.Thread):
             imgsz=self.imgsz,
             tracker_config=self.tracker_config,
         )
+    def _apply_lighting_mode(self, mode: str) -> None:
+        self.lighting_mode = mode
+        if mode == "night":
+            self.conf_threshold = self.night_conf
+            self.tracker_config = self.night_tracker
+            self.imgsz = self.night_imgsz
+        else:
+            self.conf_threshold = self.day_conf
+            self.tracker_config = self.day_tracker
+            self.imgsz = self.day_imgsz
+
+        # Propagate to detector (handles both local ClipDetector and RemoteDetector)
+        if hasattr(self.detector, "tracker_config"):
+            self.detector.tracker_config = self.tracker_config
+        if hasattr(self.detector, "imgsz"):
+            self.detector.imgsz = self.imgsz
+
+        logger.info(
+            f"{self.cam.name}: Applied {mode.upper()} tracking profile "
+            f"(conf={self.conf_threshold:.2f}, imgsz={self.imgsz}, tracker={self.tracker_config})"
+        )
+
 
     def run(self) -> None:
         logger.info(
@@ -219,6 +263,12 @@ class CameraWorker(threading.Thread):
 
                 t, frame = item
                 frame_h, frame_w = frame.shape[:2]
+                # Check day/night lighting transition with hysteresis
+                if self.lighting_tracker.enabled:
+                    mode_changed, mode, _ = self.lighting_tracker.update(frame, now=t)
+                    if mode_changed:
+                        self._apply_lighting_mode(mode)
+
                 event_active = self.manager.open_event_id is not None
                 active_tracks = len([
                     tr for tr in self.manager.tracks.values()
@@ -488,6 +538,8 @@ def run_live(config_path: str, output_dir: str) -> int:
                         **w.stream.status(),
                         "gpu": w.cam.gpu,
                         "inference_device": w.inference_device,
+                        "lighting_mode": w.lighting_mode,
+                        "saturation": round(w.lighting_tracker.last_saturation, 1),
                         "inference_stats": (
                             w.detector.stats() if hasattr(w.detector, "stats") else None
                         ),

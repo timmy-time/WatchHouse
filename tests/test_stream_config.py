@@ -214,6 +214,34 @@ cameras:
         by_name = {c.name: c for c in cfg.cameras}
         self.assertTrue(by_name["Camera A"].record)      # default is recording
         self.assertFalse(by_name["Camera D"].record)    # live-only
+    def test_night_mode_config_parsing(self):
+        path = self._write(
+            """
+analysis:
+  night_mode:
+    enabled: true
+    confidence: 0.18
+    tracker_config: config/bytetrack_mild.yaml
+    imgsz: 960
+    night_threshold: 5.0
+    day_threshold: 16.0
+    confirm_seconds: 5.0
+    cooldown_seconds: 25.0
+cameras:
+  - name: Camera A
+    url: "rtsp://dvr/main"
+    night_confidence: 0.15
+"""
+        )
+        cfg = load_live_config(path)
+        self.assertTrue(cfg.analysis.night_mode.enabled)
+        self.assertEqual(cfg.analysis.night_mode.confidence, 0.18)
+        self.assertEqual(cfg.analysis.night_mode.tracker_config, "config/bytetrack_mild.yaml")
+        self.assertEqual(cfg.analysis.night_mode.imgsz, 960)
+        self.assertEqual(cfg.analysis.night_mode.night_threshold, 5.0)
+        self.assertEqual(cfg.analysis.night_mode.day_threshold, 16.0)
+        self.assertEqual(cfg.cameras[0].night_confidence, 0.15)
+
     def test_camera_name_env_interpolation(self):
         path = self._write(
             """

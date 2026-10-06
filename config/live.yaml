@@ -11,11 +11,23 @@ analysis:
   post_roll_seconds: 10
   max_event_seconds: 300
   tracker_config: config/bytetrack_live.yaml
+  # Dynamic Day/Night Lighting Adaptation
+  # Automatically detects camera IR cut-filter state (color vs night IR) and adjusts
+  # tracking & confidence thresholds with debounce hysteresis (no sporadic flapping).
+  night_mode:
+    enabled: true
+    confidence: 0.20                            # Lower threshold catches blurred night cars
+    tracker_config: config/bytetrack_mild.yaml  # Tolerates low-contrast night tracking
+    imgsz: 960                                  # Higher resolution for dark scenes (fast on worker GPU)
+    night_threshold: 6.0                        # Mean saturation below this = IR night mode
+    day_threshold: 15.0                         # Mean saturation above this = color day mode
+    confirm_seconds: 6.0                        # Must persist for 6s before switching
+    cooldown_seconds: 30.0                      # Minimum 30s dwell time to prevent flapping
   # Analysis pipe width. The pipe is what each camera worker reads, so its frame size
   # drives per-frame CPU (rawvideo read, motion diff, preview encode) and detector
   # input. Analysing 1080p burned ~7 of 8 CPU cores; 704px wide cut that to ~1 core
   # with no framing change. 0 = keep native source resolution.
-  pipe_width: 0 
+  pipe_width: 704 
   #704
   # Which stream feeds the pipe: "main" keeps the framing that dashboard zones and
   # scenery slots were drawn in. The DVR substream is 4:3 (704x576) with a different
