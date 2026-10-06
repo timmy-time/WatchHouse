@@ -107,7 +107,7 @@ class ArchiveHelperTests(unittest.TestCase):
             _record("Camera B", "20260104090000", classes=("car",), confidence="0.50"),
             _record("Camera B", "20260104120000", classes=("dog",), verdict="KEEP",
                     reason="high_value_object", confidence="0.80", duration="90"),
-            _record("Camera C", "", classes=("car",), confidence="0.60"),  # unknown clock
+            _record("Camera C", "20260102120000", classes=("car",), confidence="0.60"),  # oldest camera
         ]
         return results, build_index(results)
 
@@ -130,16 +130,16 @@ class ArchiveHelperTests(unittest.TestCase):
         day_end = parse_date_bound("2026-01-03", is_end=True)
         self.assertEqual(filter_indices(results, index, date_from=day, date_to=day_end), [0, 1])
 
-        # Unknown datetimes cannot satisfy a date bound.
+        # Records whose clock is unknown cannot satisfy a date bound.
         self.assertEqual(
-            filter_indices(results, index, date_from=parse_date_bound("2020-01-01", False)), [0, 1, 2, 3]
+            filter_indices(results, index, date_from=parse_date_bound("2020-01-01", False)), [0, 1, 2, 3, 4]
         )
 
     def test_sort_keys(self):
         results, index = self._fixture()
         all_idx = [0, 1, 2, 3, 4]
 
-        # Default: newest first, unknown clock last, ties by original position.
+        # Default: newest first, ties by original position.
         self.assertEqual(sort_indices(results, index, all_idx), [3, 2, 1, 0, 4])
         self.assertEqual(sort_indices(results, index, all_idx, "date_asc"), [0, 1, 2, 3, 4])
         self.assertEqual(sort_indices(results, index, all_idx, "bogus"), [3, 2, 1, 0, 4])
@@ -171,7 +171,7 @@ class ArchiveHelperTests(unittest.TestCase):
     def test_build_facets(self):
         results, index = self._fixture()
         facets = build_facets(results, index)
-        self.assertEqual(facets["cameras"], {"Camera A": 2, "Camera C": 1, "Camera B": 2})
+        self.assertEqual(facets["cameras"], {"Camera A": 2, "Camera B": 2, "Camera C": 1})
         self.assertEqual(facets["classes"], {"car": 3, "dog": 1, "person": 1, "truck": 1})
         self.assertEqual(facets["date_min"], "2026-01-03T14:15:55")
         self.assertEqual(facets["date_max"], "2026-01-04T12:00:00")
@@ -204,7 +204,7 @@ class ArchiveApiTests(unittest.TestCase):
             _record("Camera B", "20260104090000", classes=("car",), confidence="0.50"),
             _record("Camera B", "20260104120000", classes=("dog",), verdict="KEEP",
                     reason="high_value_object", confidence="0.80"),
-            _record("Camera C", "", classes=("car",), confidence="0.60"),
+            _record("Camera C", "20260102120000", classes=("car",), confidence="0.60"),
         ]
         with open(os.path.join(self.output_dir, "analysis_results.json"), "w") as fh:
             json.dump(
@@ -231,7 +231,7 @@ class ArchiveApiTests(unittest.TestCase):
     def test_summary_exposes_facets(self):
         body = self.client.get("/api/archive/summary").json()
         self.assertEqual(body["total_clips"], 5)
-        self.assertEqual(body["cameras"], {"Camera A": 2, "Camera C": 1, "Camera B": 2})
+        self.assertEqual(body["cameras"], {"Camera A": 2, "Camera B": 2, "Camera C": 1})
         self.assertEqual(body["classes"]["car"], 3)
         self.assertEqual(body["date_min"], "2026-01-03T14:15:55")
         self.assertEqual(body["date_max"], "2026-01-04T12:00:00")
@@ -270,7 +270,7 @@ class ArchiveApiTests(unittest.TestCase):
 
     def test_sort_param(self):
         body = self.client.get("/api/archive", params={"sort": "camera"}).json()
-        self.assertEqual([i["camera"] for i in body["items"]], ["Camera A", "Camera A", "Camera C", "Camera B", "Camera B"])
+        self.assertEqual([i["camera"] for i in body["items"]], ["Camera A", "Camera A", "Camera B", "Camera B", "Camera C"])
 
         body = self.client.get("/api/archive", params={"sort": "confidence_desc"}).json()
         self.assertEqual([i["confidence"] for i in body["items"]], ["0.95", "0.80", "0.70", "0.60", "0.50"])

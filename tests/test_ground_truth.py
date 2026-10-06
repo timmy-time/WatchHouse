@@ -7,27 +7,27 @@ from engine.pipeline import AnalysisPipeline
 
 GROUND_TRUTH_CASES = [
     {
-        "filename": "3_6_DVR0000_Camera C_30515ca9438a43dab33b4274723d7069_20260103170429.mp4",
+        "filename": "00000000_1_DVR000000_Camera A_00000000000000000000000000000001_20260103170429.mp4",
         "expected_verdict": "KEEP",
-        "description": "Person moving at camera c (putting on shoes)",
+        "description": "Person moving at entryway (putting on shoes)",
     },
     {
-        "filename": "2_6_DVR0000_Camera B_a3473e0a29a64fe88d616d10a8614ef2_20260103145328.mp4",
+        "filename": "00000000_1_DVR000000_Camera B_00000000000000000000000000000002_20260103145328.mp4",
         "expected_verdict": "KEEP",
         "description": "Person walking down sidewalk in blue jacket",
     },
     {
-        "filename": "1_6_DVR0000_Camera A_136488f5ec8d4f0f8beef0396ac85ad3_20260103141555.mp4",
+        "filename": "00000000_1_DVR000000_Camera C_00000000000000000000000000000003_20260103141555.mp4",
         "expected_verdict": "DISCARD",
-        "description": "Daytime camera a with stationary parked vehicles",
+        "description": "Daytime scene with stationary parked vehicles",
     },
     {
-        "filename": "1_6_DVR0000_Camera A_14dd2e8f7dff4fd5912ee261796386f9_20260103195427.mp4",
+        "filename": "00000000_1_DVR000000_Camera C_00000000000000000000000000000004_20260103195427.mp4",
         "expected_verdict": "DISCARD",
         "description": "Night IR spiderweb in front of stationary parked car",
     },
     {
-        "filename": "1_6_DVR0000_Camera A_0053ae04568a4cd8bc7daa1af203b1d5_20260103222915.mp4",
+        "filename": "00000000_1_DVR000000_Camera C_00000000000000000000000000000005_20260103222915.mp4",
         "expected_verdict": "DISCARD",
         "description": "Night headlight reflection sweep across fence",
     },

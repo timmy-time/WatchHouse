@@ -207,7 +207,7 @@ class TestWebApi(unittest.TestCase):
             "/api/scenery/slots",
             json={
                 "camera": "Camera A",
-                "name": "Parked Parked Car 1",
+                "name": "Parked Car 1",
                 "slot_box": [0.15, 0.35, 0.55, 0.75],
                 "is_friendly": True,
                 "color_name": "red",
@@ -215,7 +215,7 @@ class TestWebApi(unittest.TestCase):
         )
         self.assertEqual(res.status_code, 201)
         slot = res.json()
-        self.assertEqual(slot["name"], "Parked Parked Car 1")
+        self.assertEqual(slot["name"], "Parked Car 1")
         slot_id = slot["id"]
 
         # List slots
@@ -227,10 +227,10 @@ class TestWebApi(unittest.TestCase):
         # Update slot
         res_patch = self.client.patch(
             f"/api/scenery/slots/{slot_id}",
-            json={"name": "Parked Car 1"},
+            json={"name": "Parked Car 1 (white)"},
         )
         self.assertEqual(res_patch.status_code, 200)
-        self.assertEqual(res_patch.json()["name"], "Parked Car 1")
+        self.assertEqual(res_patch.json()["name"], "Parked Car 1 (white)")
 
         # Delete slot
         res_del = self.client.delete(f"/api/scenery/slots/{slot_id}")
@@ -242,21 +242,21 @@ class TestWebApi(unittest.TestCase):
 
     def test_vehicles_api_crud(self):
         # Create
-        res = self.client.post("/api/vehicles", json={"name": "Parked Car 1"})
+        res = self.client.post("/api/vehicles", json={"name": "Parked Car 2"})
         self.assertEqual(res.status_code, 201)
         vid = res.json()["id"]
 
         # Duplicate -> 409
-        self.assertEqual(self.client.post("/api/vehicles", json={"name": "Parked Car 1"}).status_code, 409)
+        self.assertEqual(self.client.post("/api/vehicles", json={"name": "Parked Car 2"}).status_code, 409)
 
         # Rename
-        res_ren = self.client.patch(f"/api/vehicles/{vid}", json={"name": "Parked Car 2"})
+        res_ren = self.client.patch(f"/api/vehicles/{vid}", json={"name": "Parked Car 2 (white)"})
         self.assertEqual(res_ren.status_code, 200)
 
         # List shows it
         listed = self.client.get("/api/vehicles").json()
         self.assertEqual(len(listed), 1)
-        self.assertEqual(listed[0]["name"], "Parked Car 2")
+        self.assertEqual(listed[0]["name"], "Parked Car 2 (white)")
 
         # Delete
         self.assertEqual(self.client.delete(f"/api/vehicles/{vid}").status_code, 200)
@@ -265,7 +265,7 @@ class TestWebApi(unittest.TestCase):
     def test_slot_creation_links_vehicle_and_relinks_across_cameras(self):
         # Slot on Camera B auto-creates + links a vehicle
         res = self.client.post("/api/scenery/slots", json={
-            "camera": "Camera B", "name": "Parked Car 2", "slot_box": [0.1, 0.1, 0.3, 0.3],
+            "camera": "Camera B", "name": "Parked Car 1", "slot_box": [0.1, 0.1, 0.3, 0.3],
         })
         self.assertEqual(res.status_code, 201)
         slot_a = res.json()
@@ -274,7 +274,7 @@ class TestWebApi(unittest.TestCase):
 
         # Second slot on Camera A with the SAME name reuses the vehicle
         res2 = self.client.post("/api/scenery/slots", json={
-            "camera": "Camera A", "name": "Parked Car 2", "slot_box": [0.4, 0.0, 0.5, 0.1],
+            "camera": "Camera A", "name": "Parked Car 1", "slot_box": [0.4, 0.0, 0.5, 0.1],
         })
         self.assertEqual(res2.status_code, 201)
         slot_b = res2.json()
@@ -286,7 +286,7 @@ class TestWebApi(unittest.TestCase):
 
         # Merge a typo'd slot into the canonical vehicle: unlink then relink
         res3 = self.client.post("/api/scenery/slots", json={
-            "camera": "Camera A", "name": "Parked Car 2", "slot_box": [0.5, 0.0, 0.6, 0.1],
+            "camera": "Camera A", "name": "Parked Car 1 (typo)", "slot_box": [0.5, 0.0, 0.6, 0.1],
         })
         typo = res3.json()
         self.assertNotEqual(typo["vehicle_id"], vid)
@@ -294,7 +294,7 @@ class TestWebApi(unittest.TestCase):
         relink = self.client.patch(f"/api/scenery/slots/{typo['id']}", json={"vehicle_id": vid})
         self.assertEqual(relink.status_code, 200)
         self.assertEqual(relink.json()["vehicle_id"], vid)
-        self.assertEqual(relink.json()["name"], "Parked Car 2")  # label follows the vehicle
+        self.assertEqual(relink.json()["name"], "Parked Car 1")  # label follows the vehicle
 
         # Unlink
         unlink = self.client.patch(f"/api/scenery/slots/{typo['id']}", json={"vehicle_id": None})

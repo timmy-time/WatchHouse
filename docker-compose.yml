@@ -37,14 +37,14 @@ services:
       - TZ=UTC
       - YOLO_CONFIG_DIR=/tmp/Ultralytics
       - NVIDIA_DRIVER_CAPABILITIES=compute,video,utility
-      - CAM_CAMA_URL=${CAM_CAMA_URL:-}
-      - CAM_CAMB_URL=${CAM_CAMB_URL:-}
-      - CAM_CAMC_URL=${CAM_CAMC_URL:-}
-      - CAM_CAMD_URL=${CAM_CAMD_URL:-}
-      - CAM_CAMA_SUB_URL=${CAM_CAMA_SUB_URL:-}
-      - CAM_CAMB_SUB_URL=${CAM_CAMB_SUB_URL:-}
-      - CAM_CAMC_SUB_URL=${CAM_CAMC_SUB_URL:-}
-      - CAM_CAMD_SUB_URL=${CAM_CAMD_SUB_URL:-}
+      - CAM_A_URL=${CAM_A_URL:-}
+      - CAM_B_URL=${CAM_B_URL:-}
+      - CAM_C_URL=${CAM_C_URL:-}
+      - CAM_D_URL=${CAM_D_URL:-}
+      - CAM_A_SUB_URL=${CAM_A_SUB_URL:-}
+      - CAM_B_SUB_URL=${CAM_B_SUB_URL:-}
+      - CAM_C_SUB_URL=${CAM_C_SUB_URL:-}
+      - CAM_D_SUB_URL=${CAM_D_SUB_URL:-}
       - NTFY_URL=${NTFY_URL:-https://ntfy.sh}
       - NTFY_TOPIC=${NTFY_TOPIC:-}
       - NTFY_TOKEN=${NTFY_TOKEN:-}
@@ -78,11 +78,15 @@ services:
       - rtsp-sim
     volumes:
       - ./clips:/data/clips:ro
+    environment:
+      - CAM_SIM_A=${CAM_SIM_A:-}
+      - CAM_SIM_B=${CAM_SIM_B:-}
+      - CAM_SIM_C=${CAM_SIM_C:-}
     entrypoint:
       - bash
       - -c
       - >
-        /usr/bin/ffmpeg -hide_banner -loglevel error -re -stream_loop -1 -i "/data/clips/20260103/3_6_DVR0000_Camera C_30515ca9438a43dab33b4274723d7069_20260103170429.mp4" -map 0:v -c copy -f rtsp -rtsp_transport tcp rtsp://rtsp-sim:8554/camera_c &
-        /usr/bin/ffmpeg -hide_banner -loglevel error -re -stream_loop -1 -i "/data/clips/20260103/1_6_DVR0000_Camera A_136488f5ec8d4f0f8beef0396ac85ad3_20260103141555.mp4" -map 0:v -c copy -f rtsp -rtsp_transport tcp rtsp://rtsp-sim:8554/camera a &
-        /usr/bin/ffmpeg -hide_banner -loglevel error -re -stream_loop -1 -i "/data/clips/20260103/2_6_DVR0000_Camera B_a3473e0a29a64fe88d616d10a8614ef2_20260103145328.mp4" -map 0:v -c copy -f rtsp -rtsp_transport tcp rtsp://rtsp-sim:8554/camera_b &
+        /usr/bin/ffmpeg -hide_banner -loglevel error -re -stream_loop -1 -i "$CAM_SIM_C" -map 0:v -c copy -f rtsp -rtsp_transport tcp rtsp://rtsp-sim:8554/camera_c &
+        /usr/bin/ffmpeg -hide_banner -loglevel error -re -stream_loop -1 -i "$CAM_SIM_A" -map 0:v -c copy -f rtsp -rtsp_transport tcp rtsp://rtsp-sim:8554/camera_a &
+        /usr/bin/ffmpeg -hide_banner -loglevel error -re -stream_loop -1 -i "$CAM_SIM_B" -map 0:v -c copy -f rtsp -rtsp_transport tcp rtsp://rtsp-sim:8554/camera_b &
         wait

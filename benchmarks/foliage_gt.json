@@ -1,5 +1,5 @@
 {
-  "camera": "Camera D",
+  "camera": "bench",
   "clip": "output/bench/foliage.mp4",
   "fps": 15.0,
   "objects": [
@@ -12,7 +12,7 @@
         0.941,
         0.378
       ],
-      "note": "prime mover parked far side of road",
+      "note": "parked truck far side of road",
       "accept_classes": [
         "truck",
         "car",
@@ -28,7 +28,7 @@
         0.521,
         0.23
       ],
-      "note": "sedan behind tree branches near intersection",
+      "note": "parked sedan behind tree branches near intersection",
       "accept_classes": [
         "car",
         "truck",

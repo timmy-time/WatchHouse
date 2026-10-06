@@ -3,19 +3,41 @@
 from dataclasses import asdict
 import json
 import os
+import re
 import shutil
 from typing import Any, Dict, List, Optional
 from engine.classifier import EventDecision, Verdict
 
 
+_HEX_HASH_RE = re.compile(r"^[0-9a-fA-F]{32}$")
+
+
 def parse_clip_metadata(clip_path: str) -> Dict[str, str]:
-    """Extract camera name and timestamp from standard clip filenames."""
+    """Extract camera name and timestamp from standard clip filenames.
+
+    Positional convention (underscore-joined, any DVR brand)::
+
+        <channel:8hex>_<n>_<DVR-id>_<Camera Name>_<hash:32hex>_<YYYYMMDDHHMMSS>.<ext>
+
+    The camera is the field immediately before the trailing 32-hex digest; a
+    shorter 4-field form (<n>_<channel>_<Camera Name>_<timestamp>) is also
+    accepted. The DVR id itself is never interpreted, so any recorder works.
+    """
     filename = os.path.basename(clip_path)
     parts = filename.split("_")
-    # Format: 1_6_DVR0000_Camera A_<hash>_<timestamp>.mp4
     camera = "Unknown"
     timestamp = ""
-    if len(parts) >= 6:
+    # A 32-hex field is a content hash, not a camera: the camera name is the
+    # field directly before it. This is DVR-agnostic and reproduces the
+    # canonical 6-field layout without hardcoding a positional index.
+    hash_idx = next(
+        (i for i in range(len(parts) - 1, 0, -1) if _HEX_HASH_RE.match(parts[i])),
+        None,
+    )
+    if hash_idx is not None:
+        camera = parts[hash_idx - 1]
+        timestamp = parts[-1].replace(".mp4", "").replace(".png", "")
+    elif len(parts) >= 6:
         camera = parts[3]
         timestamp = parts[-1].replace(".mp4", "").replace(".png", "")
     elif len(parts) >= 4:
@@ -104,7 +126,7 @@ class AnalysisReporter:
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Surveillance Video Event Analysis Gallery</title>
+  <title>WatchHouse Event Analysis Gallery</title>
   <style>
     :root {{
       --bg: #0f172a;
@@ -326,8 +348,8 @@ class AnalysisReporter:
 <body>
   <header>
     <div>
-      <h1>Surveillance Video Event Analysis</h1>
-      <div class="meta-sub">Dual GPU Accelerated Pipeline &bull; Stride 15 &bull; Runtime: {round(runtime_seconds, 1)}s</div>
+      <h1>WatchHouse Event Analysis</h1>
+      <div class="meta-sub">Accelerated Detection Pipeline &bull; Stride 15 &bull; Runtime: {round(runtime_seconds, 1)}s</div>
     </div>
   </header>
 

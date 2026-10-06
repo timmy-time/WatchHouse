@@ -30,7 +30,7 @@ class TestIncrementalCache(unittest.TestCase):
         clip1_src = os.path.join(
             base_dir,
             "20260103",
-            "3_6_DVR0000_Camera C_30515ca9438a43dab33b4274723d7069_20260103170429.mp4",
+            "00000000_1_DVR000000_Camera A_00000000000000000000000000000001_20260103170429.mp4",
         )
         thumb1_src = clip1_src.replace(".mp4", ".png")
 
@@ -79,7 +79,7 @@ class TestIncrementalCache(unittest.TestCase):
         clip2_src = os.path.join(
             base_dir,
             "20260103",
-            "1_6_DVR0000_Camera A_136488f5ec8d4f0f8beef0396ac85ad3_20260103141555.mp4",
+            "00000000_1_DVR000000_Camera C_00000000000000000000000000000003_20260103141555.mp4",
         )
         clip2_dest = os.path.join(folder_b, os.path.basename(clip2_src))
         shutil.copy2(clip2_src, clip2_dest)
