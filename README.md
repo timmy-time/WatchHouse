@@ -1,4 +1,6 @@
-# Surveillance Video Event Analysis Engine
+# WatchHouse
+
+AI-powered video intelligence that watches your live camera feeds and saved footage, keeping what matters.
 
 Automated, dual-GPU accelerated surveillance video analysis engine designed to evaluate security camera clips and thumbnails, filter out stationary parked vehicles and nuisance environmental triggers (spiderwebs, insect glare, wind foliage, headlight sweeps), and retain genuine events (pedestrians, moving vehicles, and animals).
 

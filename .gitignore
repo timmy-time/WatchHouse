@@ -15,6 +15,16 @@ clips/
 output/
 recordings/
 
+# Footage — never commit video (39 GB of clips live in clips/)
+*.mp4
+*.mkv
+*.avi
+*.mov
+*.m4v
+*.ts
+*.m2ts
+clips/**/*.mp4
+
 # Model weights
 *.pt
 *.onnx
