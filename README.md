@@ -284,7 +284,7 @@ Per-camera options:
 | `tracker_config` | Optional path to a ByteTrack profile for this camera. |
 | `zones` | Named polygons with `type: entry` (alerts) or `type: ignore` (suppressed). |
 
-Environment variables (`CAM_*_NAME`, `CAM_*_URL`, `CAM_*_SUB_URL`, `NTFY_*`, `WEBHOOK_URL`, `DASHBOARD_URL`, `DASHBOARD_USER`, `DASHBOARD_PASSWORD`) are interpolated from `.env`. Camera names can be customized via `CAM_A_NAME=...` in `.env` without modifying tracked configuration files. Additionally, if an untracked `config/live.local.yaml` exists alongside `config/live.yaml`, it is automatically preferred for full per-host customization.
+Environment variables (`CAM_*_NAME`, `CAM_*_URL`, `CAM_*_SUB_URL`, `NTFY_*`, `WEBHOOK_URL`, `DASHBOARD_URL`, `DASHBOARD_USER`, `DASHBOARD_PASSWORD`) are interpolated from `.env`. Because `docker-compose.yml` lists variables explicitly under `environment:`, any variable present in `.env` must also be enumerated in the compose file to reach the container. Camera names can be customized via `CAM_A_NAME=...` in `.env` without modifying tracked configuration files. Additionally, if an untracked `config/live.local.yaml` exists alongside `config/live.yaml`, it is automatically preferred for full per-host customization.
 
 ### Main stream vs substream
 

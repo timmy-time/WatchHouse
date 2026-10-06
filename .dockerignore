@@ -1,5 +1,8 @@
 clips
 output
+.env
+.env.*
+config/*.local.yaml
 *.pt
 __pycache__
 *.pyc
