@@ -72,6 +72,13 @@ class InferenceServerTests(unittest.TestCase):
         body.update(kw)
         return self.client.post("/track", json=body)
 
+    def test_root_index(self):
+        res = self.client.get("/")
+        self.assertEqual(res.status_code, 200)
+        body = res.json()
+        self.assertEqual(body["status"], "online")
+        self.assertIn("health", body["endpoints"])
+
     def test_health(self):
         body = self.client.get("/health").json()
         self.assertTrue(body["ok"])

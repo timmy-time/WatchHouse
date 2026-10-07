@@ -122,6 +122,21 @@ def create_infer_app(
     app = FastAPI(title="CCTV Inference Server")
     app.state.sessions = sessions
 
+    @app.get("/")
+    async def index():
+        return {
+            "status": "online",
+            "service": "WatchHouse Inference Worker",
+            "device": sessions.device,
+            "sessions": sessions.count(),
+            "endpoints": {
+                "health": "GET /health",
+                "track": "POST /track",
+                "detect": "POST /detect",
+                "reset": "POST /reset",
+            },
+        }
+
     @app.get("/health")
     async def health():
         return {
